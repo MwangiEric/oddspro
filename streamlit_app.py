@@ -1,38 +1,26 @@
-import requests
-from bs4 import BeautifulSoup
+if st.button("Scrape Properties"):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        st.write("Successfully fetched the URL!")  # Debugging output
 
-# Define the URL to scrape
-url = "https://www.property24.co.ke/property-for-sale-in-ruiru-c1849?fromprice=20000000&toprice=40000000"
+        soup = BeautifulSoup(response.content, 'html.parser')
+        listings = soup.find_all('div', class_='p24_regularTile')
 
-# Send a GET request to the URL
-response = requests.get(url)
-response.raise_for_status()  # Raise an error for bad responses
+        st.write(f"Found {len(listings)} listings.")  # Debugging output
+        properties = []
 
-# Parse the HTML content
-soup = BeautifulSoup(response.content, 'html.parser')
+        for listing in listings:
+            # Extract relevant data
+            title = listing.find('span', class_='p24_propertyTitle').get_text(strip=True)
+            price = listing.find('span', class_='p24_price').get_text(strip=True)
+            location = listing.find('span', class_='p24_location').get_text(strip=True)
+            description = listing.find('span', class_='p24_excerpt').get_text(strip=True)
+            properties.append({'Title': title, 'Price': price, 'Location': location, 'Description': description})
 
-# Find all property listings
-listings = soup.find_all('div', class_='p24_regularTile')
+        # Display results
+        for property in properties:
+            st.write(f"Title: {property['Title']}, Price: {property['Price']}, Location: {property['Location']}, Description: {property['Description']}")
 
-# Extract details from each listing
-properties = []
-for listing in listings:
-    title = listing.find('span', class_='p24_propertyTitle').get_text(strip=True)
-    price = listing.find('span', class_='p24_price').get_text(strip=True)
-    location = listing.find('span', class_='p24_location').get_text(strip=True)
-    description = listing.find('span', class_='p24_excerpt').get_text(strip=True)
-
-    properties.append({
-        'title': title,
-        'price': price,
-        'location': location,
-        'description': description
-    })
-
-# Print the extracted properties
-for property in properties:
-    print(f"Title: {property['title']}")
-    print(f"Price: {property['price']}")
-    print(f"Location: {property['location']}")
-    print(f"Description: {property['description']}")
-    print("-" * 40)
+    except Exception as e:
+        st.error(f"Error: {e}")
