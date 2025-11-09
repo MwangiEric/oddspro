@@ -1,40 +1,38 @@
-import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 
-# Set up the Streamlit app
-st.title("Betika Kenya Scraper")
+# Define the URL to scrape
+url = "https://www.property24.co.ke/property-for-sale-in-ruiru-c1849?fromprice=20000000&toprice=40000000"
 
-# Function to scrape Betika
-def scrape_betika():
-    url = "https://www.betika.com/"  # Replace with the specific URL if needed
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-    }
-    
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()  # Raise an error for bad responses
+# Send a GET request to the URL
+response = requests.get(url)
+response.raise_for_status()  # Raise an error for bad responses
 
-    # Parse the HTML content
-    soup = BeautifulSoup(response.content, 'html.parser')
+# Parse the HTML content
+soup = BeautifulSoup(response.content, 'html.parser')
 
-    # Example: Find specific elements (e.g., match odds)
-    matches = soup.find_all('div', class_='match')  # Update with the correct class or tag
+# Find all property listings
+listings = soup.find_all('div', class_='p24_regularTile')
 
-    results = []
-    for match in matches:
-        team1 = match.find('div', class_='team1').get_text(strip=True)
-        team2 = match.find('div', class_='team2').get_text(strip=True)
-        odds = match.find('div', class_='odds').get_text(strip=True)
-        results.append(f"{team1} vs {team2}: {odds}")
+# Extract details from each listing
+properties = []
+for listing in listings:
+    title = listing.find('span', class_='p24_propertyTitle').get_text(strip=True)
+    price = listing.find('span', class_='p24_price').get_text(strip=True)
+    location = listing.find('span', class_='p24_location').get_text(strip=True)
+    description = listing.find('span', class_='p24_excerpt').get_text(strip=True)
 
-    return results
+    properties.append({
+        'title': title,
+        'price': price,
+        'location': location,
+        'description': description
+    })
 
-if st.button("Scrape Betika"):
-    try:
-        matches = scrape_betika()
-        st.write("Latest Matches and Odds:")
-        for match in matches:
-            st.write(match)
-    except Exception as e:
-        st.error(f"Error: {e}")
+# Print the extracted properties
+for property in properties:
+    print(f"Title: {property['title']}")
+    print(f"Price: {property['price']}")
+    print(f"Location: {property['location']}")
+    print(f"Description: {property['description']}")
+    print("-" * 40)
