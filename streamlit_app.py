@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 st.title("Jumia Flash Sales Scraper")
 
 # URL for the Jumia flash sales
-url = "https://www.jumia.co.ke/phones-tablets/flash-sales/#catalog-listing"
+url = "https://cors.ericmwangi13.workers.dev/?url=https://www.jumia.co.ke/phones-tablets/flash-sales/#catalog-listing"
 
 if st.button("Scrape Flash Sales"):
     try:
