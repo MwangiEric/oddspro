@@ -17,12 +17,12 @@ if st.button("Scrape Flash Sales"):
         soup = BeautifulSoup(response.content, 'html.parser')
 
         # Find product listings
-        listings = soup.find_all('div', class_='p24_regularTile')  # Adjust class name if necessary
+        listings = soup.find_all('div', class_='-phs -pvxs row _no-g _4cl-3cm-shs')  # Adjust class name if necessary
 
         # Extract details from each listing
         products = []
         for listing in listings:
-            title = listing.find('h3', class_='name').get_text(strip=True)
+            title = listing.find('article', class_='prd _fb _p col c-prd').get_text(strip=True)
             price = listing.find('span', class_='p24_price').get_text(strip=True)
             description = listing.find('span', class_='p24_excerpt').get_text(strip=True)
 
