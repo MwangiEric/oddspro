@@ -21,9 +21,8 @@ logger = logging.getLogger(__name__)
 
 st.title("Jumia Flash Sales AI Agent")
 
-# Target URL and proxy
-target_url = "https://www.jumia.co.ke/phones-tablets/flash-sales/"
-proxy_url = f"https://cors.ericmwangi13.workers.dev/?url={urllib.parse.quote(target_url, safe=':/?#')}"
+# Target base URL
+base_url = "https://www.jumia.co.ke/phones-tablets/flash-sales/"
 
 # Initialize free Hugging Face model for text processing
 classifier = pipeline("sentiment-analysis", model="distilbert-base-uncased")
@@ -32,6 +31,7 @@ classifier = pipeline("sentiment-analysis", model="distilbert-base-uncased")
 query = st.text_input("Enter query (e.g., 'phones under 15000' or 'Tecno')", value="flash sales")
 scrape_method = st.radio("Scrape Method", ["Requests (Static via Proxy)", "Selenium (Dynamic Content)"])
 debug_mode = st.checkbox("Enable Debug Mode (Show Raw HTML)")
+max_pages = st.slider("Max Pages to Scrape (Requests Only)", 1, 10, 5)
 max_scrolls = st.slider("Max Page Scrolls (Selenium Only)", 1, 5, 3)
 max_retries = st.slider("Max Retries on Failure", 1, 3, 2)
 
@@ -40,18 +40,17 @@ progress_bar = st.progress(0)
 status_text = st.empty()
 csv_placeholder = st.empty()
 
-# Function to extract price value (e.g., "KSh 11,500" -> 11500)
+# Function to parse price (e.g., "KSh 11,500" -> 11500)
 def parse_price(price_str):
     try:
         return float(re.sub(r"[^\d.]", "", price_str))
     except:
         return float("inf")
 
-# AI Agent Logic: Filter products based on query
+# AI Filter: Filter products based on query
 def filter_products(products, query):
     if not products:
         return []
-    # Simple keyword or price filter
     if "under" in query.lower():
         try:
             max_price = float(re.search(r"under\s*(\d+)", query, re.IGNORECASE).group(1))
@@ -66,7 +65,6 @@ def filter_products(products, query):
     for product in products:
         title = product["title"].lower()
         price = parse_price(product["price"])
-        # Use distilbert to score relevance (basic)
         relevance = classifier(title)[0]["score"] if keywords else 1.0
         if price <= max_price and (not keywords or any(k in title for k in keywords)) and relevance > 0.5:
             filtered.append(product)
@@ -74,8 +72,8 @@ def filter_products(products, query):
     return filtered
 
 # Scraper Function
-def scrape_jumia(method, max_scrolls, max_retries):
-    products = []
+def scrape_jumia(method, max_pages, max_scrolls, max_retries):
+    all_products = []
     for attempt in range(max_retries):
         try:
             status_text.write(f"Attempt {attempt + 1}/{max_retries}...")
@@ -90,7 +88,7 @@ def scrape_jumia(method, max_scrolls, max_retries):
                 options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
                 
-                driver.get(target_url)
+                driver.get(base_url)
                 wait = WebDriverWait(driver, 15)
                 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "article.prd._fb.col.c-prd")))
                 progress_bar.progress(30)
@@ -102,32 +100,42 @@ def scrape_jumia(method, max_scrolls, max_retries):
                 
                 soup = BeautifulSoup(driver.page_source, "html.parser")
                 driver.quit()
-                progress_bar.progress(80)
+                listings = soup.find_all("article", class_="prd _fb col c-prd")
+                
             else:
-                logger.info("Starting proxy scrape")
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                response = requests.get(proxy_url, headers=headers, timeout=15)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.content, "html.parser")
-                progress_bar.progress(50)
+                logger.info("Starting proxy scrape with pagination")
+                listings = []
+                for page in range(1, max_pages + 1):
+                    page_param = f"?page={page}" if page > 1 else ""
+                    target_page_url = base_url + page_param
+                    proxy_page_url = f"https://cors.ericmwangi13.workers.dev/?url={urllib.parse.quote(target_page_url, safe=':/?#')}"
+                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                    response = requests.get(proxy_page_url, headers=headers, timeout=15)
+                    response.raise_for_status()
+                    soup = BeautifulSoup(response.content, "html.parser")
+                    
+                    if debug_mode:
+                        st.write(f"### Raw HTML Preview for Page {page} (First 2000 chars):")
+                        st.code(soup.prettify()[:2000], language="html")
+                    
+                    page_listings = soup.find_all("article", class_="prd _fb col c-prd")
+                    listings.extend(page_listings)
+                    status_text.write(f"Page {page}: Found {len(page_listings)} listings")
+                    progress_bar.progress(50 + (page / max_pages) * 40)
+                    
+                    if not page_listings:  # Stop if no more listings
+                        break
             
-            # Debug HTML
-            if debug_mode:
-                st.write("### Raw HTML Preview (First 2000 chars):")
-                st.code(soup.prettify()[:2000], language="html")
-            
-            # Extract listings
-            listings = soup.find_all("article", class_="prd _fb col c-prd") or \
-                       soup.find_all("div", class_="-phs -pvxs row _no-g _4cl-3cm-shs")
-            status_text.write(f"Found {len(listings)} listings...")
-            progress_bar.progress(90)
-            
+            # Extract from all listings
+            products = []
             for listing in listings:
                 title_elem = listing.find("h3", class_="name") or listing.find("a", class_="name")
                 price_elem = listing.find("div", class_="prc") or listing.find("span", class_="p24_price")
                 desc_elem = listing.find("div", class_="bdg _dsct _sm") or \
                             listing.find("p", class_="dscr") or \
-                            listing.find("div", class_="info")
+                            listing.find("div", class_="s-prc-w") or \
+                            listing.find("div", class_="info") or \
+                            listing.find("div", class_="tag _dsct")  # Added for discounts
                 
                 title = title_elem.get_text(strip=True) if title_elem else "N/A"
                 price = price_elem.get_text(strip=True) if price_elem else "N/A"
@@ -140,8 +148,9 @@ def scrape_jumia(method, max_scrolls, max_retries):
                         "description": description
                     })
             
-            if products:
-                break  # Success, exit retry loop
+            all_products = products  # Use collected products
+            if all_products:
+                break  # Success
             
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
@@ -150,14 +159,14 @@ def scrape_jumia(method, max_scrolls, max_retries):
                 progress_bar.progress(0)
                 return []
     
-    return products
+    return all_products
 
 # Main Logic
 if st.button("Scrape and Filter"):
     try:
         # Scrape data
         status_text.write("Scraping Jumia...")
-        products = scrape_jumia(scrape_method, max_scrolls, max_retries)
+        products = scrape_jumia(scrape_method, max_pages, max_scrolls, max_retries)
         
         # Filter with AI
         status_text.write("Filtering results with AI...")
@@ -182,9 +191,9 @@ if st.button("Scrape and Filter"):
                 mime="text/csv"
             )
         else:
-            st.warning("No products found matching your query. Try a different query or method.")
+            st.warning("No products found matching your query. Try increasing Max Pages or using Selenium.")
         
-        st.info(f"Debug: Found {len(products)} total listings before filtering.")
+        st.info(f"Debug: Scraped {len(products)} total products before filtering.")
         progress_bar.progress(100)
         status_text.write("Complete!")
     
