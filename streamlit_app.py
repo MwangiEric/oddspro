@@ -11,6 +11,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import pandas as pd
+import os
 
 st.title("Jumia Flash Sales Scraper")
 
@@ -26,8 +27,6 @@ max_scrolls = st.slider("Max Page Scrolls (Selenium Only)", 1, 10, 3)
 # Placeholder for progress
 progress_bar = st.progress(0)
 status_text = st.empty()
-
-# Download CSV button (placeholder)
 csv_placeholder = st.empty()
 
 if st.button("Scrape Flash Sales"):
@@ -36,35 +35,48 @@ if st.button("Scrape Flash Sales"):
         status_text.write("Starting scrape...")
 
         if scrape_method == "Selenium (Dynamic Content)":
-            # Set up Selenium
-            progress_bar.progress(10)
-            options = Options()
-            options.add_argument("--headless")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+            try:
+                # Set up Selenium with ChromeDriver
+                progress_bar.progress(10)
+                options = Options()
+                options.add_argument("--headless")
+                options.add_argument("--no-sandbox")
+                options.add_argument("--disable-dev-shm-usage")
+                options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                options.add_argument("--disable-gpu")
+                options.binary_location = os.environ.get("CHROMIUM_PATH", "")  # For cloud envs
 
-            # Load page
-            status_text.write("Loading page with Selenium...")
-            driver.get(target_url)
-            wait = WebDriverWait(driver, 15)
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "article.prd._fb.col.c-prd")))
-            progress_bar.progress(30)
+                # Use webdriver-manager to get compatible ChromeDriver
+                driver = webdriver.Chrome(
+                    service=Service(ChromeDriverManager().install()),
+                    options=options
+                )
 
-            # Simulate scrolling to load more products
-            status_text.write("Scrolling to load more products...")
-            for i in range(max_scrolls):
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)  # Wait for lazy loading
-                progress_bar.progress(30 + (i + 1) * (50 // max_scrolls))
+                # Load page
+                status_text.write("Loading page with Selenium...")
+                driver.get(target_url)
+                wait = WebDriverWait(driver, 15)
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "article.prd._fb.col.c-prd")))
+                progress_bar.progress(30)
 
-            # Parse page source
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            driver.quit()
-            progress_bar.progress(80)
+                # Simulate scrolling
+                status_text.write("Scrolling to load more products...")
+                for i in range(max_scrolls):
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(2)
+                    progress_bar.progress(30 + (i + 1) * (50 // max_scrolls))
 
-        else:
+                # Parse page
+                soup = BeautifulSoup(driver.page_source, "html.parser")
+                driver.quit()
+                progress_bar.progress(80)
+
+            except Exception as e:
+                status_text.error(f"Selenium failed: {e}")
+                st.warning("Falling back to Requests (proxy) method...")
+                scrape_method = "Requests (Static via Proxy)"
+
+        if scrape_method == "Requests (Static via Proxy)":
             # Use Requests with proxy
             status_text.write("Fetching via proxy...")
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -86,13 +98,13 @@ if st.button("Scrape Flash Sales"):
 
         # Extract details
         for listing in listings:
-            # Try multiple selectors for title, price, description
             title_elem = listing.find("h3", class_="name") or listing.find("a", class_="name")
             price_elem = listing.find("div", class_="prc") or listing.find("span", class_="p24_price")
             desc_elem = listing.find("p", class_="dscr") or \
                         listing.find("span", class_="p24_excerpt") or \
                         listing.find("div", class_="s-prc-w") or \
-                        listing.find("div", class_="bdg _dsct _sm")  # For discount info
+                        listing.find("div", class_="bdg _dsct _sm") or \
+                        listing.find("div", class_="info")  # Added for potential description
 
             title = title_elem.get_text(strip=True) if title_elem else "N/A"
             price = price_elem.get_text(strip=True) if price_elem else "N/A"
@@ -113,7 +125,6 @@ if st.button("Scrape Flash Sales"):
                     st.write(f"**Title:** {product['Title']}")
                     st.write(f"**Price:** {product['Price']}")
                     st.write(f"**Description:** {product['Description']}")
-            # CSV Export
             df = pd.DataFrame(products)
             csv = df.to_csv(index=False).encode('utf-8')
             csv_placeholder.download_button(
@@ -131,6 +142,4 @@ if st.button("Scrape Flash Sales"):
 
     except Exception as e:
         status_text.error(f"Error: {e}")
-        if scrape_method == "Selenium (Dynamic Content)" and 'driver' in locals():
-            driver.quit()
         progress_bar.progress(0)
