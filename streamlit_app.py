@@ -11,121 +11,169 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import pandas as pd
-import os
+from transformers import pipeline
+import re
+import logging
 
-st.title("Jumia Flash Sales Scraper")
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+st.title("Jumia Flash Sales AI Agent")
 
 # Target URL and proxy
 target_url = "https://www.jumia.co.ke/phones-tablets/flash-sales/"
 proxy_url = f"https://cors.ericmwangi13.workers.dev/?url={urllib.parse.quote(target_url, safe=':/?#')}"
 
-# Options
-scrape_method = st.radio("Scrape Method", ["Selenium (Dynamic Content)", "Requests (Static via Proxy)"])
+# Initialize free Hugging Face model for text processing
+classifier = pipeline("sentiment-analysis", model="distilbert-base-uncased")
+
+# UI Options
+query = st.text_input("Enter query (e.g., 'phones under 15000' or 'Tecno')", value="flash sales")
+scrape_method = st.radio("Scrape Method", ["Requests (Static via Proxy)", "Selenium (Dynamic Content)"])
 debug_mode = st.checkbox("Enable Debug Mode (Show Raw HTML)")
-max_scrolls = st.slider("Max Page Scrolls (Selenium Only)", 1, 10, 3)
+max_scrolls = st.slider("Max Page Scrolls (Selenium Only)", 1, 5, 3)
+max_retries = st.slider("Max Retries on Failure", 1, 3, 2)
 
 # Placeholder for progress
 progress_bar = st.progress(0)
 status_text = st.empty()
 csv_placeholder = st.empty()
 
-if st.button("Scrape Flash Sales"):
-    products = []
+# Function to extract price value (e.g., "KSh 11,500" -> 11500)
+def parse_price(price_str):
     try:
-        status_text.write("Starting scrape...")
+        return float(re.sub(r"[^\d.]", "", price_str))
+    except:
+        return float("inf")
 
-        if scrape_method == "Selenium (Dynamic Content)":
-            try:
-                # Set up Selenium with ChromeDriver
-                progress_bar.progress(10)
+# AI Agent Logic: Filter products based on query
+def filter_products(products, query):
+    if not products:
+        return []
+    # Simple keyword or price filter
+    if "under" in query.lower():
+        try:
+            max_price = float(re.search(r"under\s*(\d+)", query, re.IGNORECASE).group(1))
+        except:
+            max_price = float("inf")
+    else:
+        max_price = float("inf")
+    
+    keywords = [word.lower() for word in query.split() if word.lower() not in ["under", "phones"]]
+    
+    filtered = []
+    for product in products:
+        title = product["title"].lower()
+        price = parse_price(product["price"])
+        # Use distilbert to score relevance (basic)
+        relevance = classifier(title)[0]["score"] if keywords else 1.0
+        if price <= max_price and (not keywords or any(k in title for k in keywords)) and relevance > 0.5:
+            filtered.append(product)
+    
+    return filtered
+
+# Scraper Function
+def scrape_jumia(method, max_scrolls, max_retries):
+    products = []
+    for attempt in range(max_retries):
+        try:
+            status_text.write(f"Attempt {attempt + 1}/{max_retries}...")
+            progress_bar.progress(10 + attempt * 10)
+            
+            if method == "Selenium (Dynamic Content)":
+                logger.info("Starting Selenium scrape")
                 options = Options()
                 options.add_argument("--headless")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                options.add_argument("--disable-gpu")
-                options.binary_location = os.environ.get("CHROMIUM_PATH", "")  # For cloud envs
-
-                # Use webdriver-manager to get compatible ChromeDriver
-                driver = webdriver.Chrome(
-                    service=Service(ChromeDriverManager().install()),
-                    options=options
-                )
-
-                # Load page
-                status_text.write("Loading page with Selenium...")
+                driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+                
                 driver.get(target_url)
                 wait = WebDriverWait(driver, 15)
                 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "article.prd._fb.col.c-prd")))
                 progress_bar.progress(30)
-
-                # Simulate scrolling
-                status_text.write("Scrolling to load more products...")
+                
                 for i in range(max_scrolls):
                     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                     time.sleep(2)
                     progress_bar.progress(30 + (i + 1) * (50 // max_scrolls))
-
-                # Parse page
+                
                 soup = BeautifulSoup(driver.page_source, "html.parser")
                 driver.quit()
                 progress_bar.progress(80)
+            else:
+                logger.info("Starting proxy scrape")
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                response = requests.get(proxy_url, headers=headers, timeout=15)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.content, "html.parser")
+                progress_bar.progress(50)
+            
+            # Debug HTML
+            if debug_mode:
+                st.write("### Raw HTML Preview (First 2000 chars):")
+                st.code(soup.prettify()[:2000], language="html")
+            
+            # Extract listings
+            listings = soup.find_all("article", class_="prd _fb col c-prd") or \
+                       soup.find_all("div", class_="-phs -pvxs row _no-g _4cl-3cm-shs")
+            status_text.write(f"Found {len(listings)} listings...")
+            progress_bar.progress(90)
+            
+            for listing in listings:
+                title_elem = listing.find("h3", class_="name") or listing.find("a", class_="name")
+                price_elem = listing.find("div", class_="prc") or listing.find("span", class_="p24_price")
+                desc_elem = listing.find("div", class_="bdg _dsct _sm") or \
+                            listing.find("p", class_="dscr") or \
+                            listing.find("div", class_="info")
+                
+                title = title_elem.get_text(strip=True) if title_elem else "N/A"
+                price = price_elem.get_text(strip=True) if price_elem else "N/A"
+                description = desc_elem.get_text(strip=True) if desc_elem else "N/A"
+                
+                if title != "N/A":
+                    products.append({
+                        "title": title,
+                        "price": price,
+                        "description": description
+                    })
+            
+            if products:
+                break  # Success, exit retry loop
+            
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt == max_retries - 1:
+                status_text.error(f"All retries failed: {str(e)}")
+                progress_bar.progress(0)
+                return []
+    
+    return products
 
-            except Exception as e:
-                status_text.error(f"Selenium failed: {e}")
-                st.warning("Falling back to Requests (proxy) method...")
-                scrape_method = "Requests (Static via Proxy)"
-
-        if scrape_method == "Requests (Static via Proxy)":
-            # Use Requests with proxy
-            status_text.write("Fetching via proxy...")
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            response = requests.get(proxy_url, headers=headers, timeout=15)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.content, "html.parser")
-            progress_bar.progress(50)
-
-        # Debug: Show raw HTML
-        if debug_mode:
-            st.write("### Raw HTML Preview (First 2000 chars):")
-            st.code(soup.prettify()[:2000], language="html")
-
-        # Find product listings
-        listings = soup.find_all("article", class_="prd _fb col c-prd") or \
-                   soup.find_all("div", class_="-phs -pvxs row _no-g _4cl-3cm-shs")
-        status_text.write(f"Found {len(listings)} listings. Extracting details...")
-        progress_bar.progress(90)
-
-        # Extract details
-        for listing in listings:
-            title_elem = listing.find("h3", class_="name") or listing.find("a", class_="name")
-            price_elem = listing.find("div", class_="prc") or listing.find("span", class_="p24_price")
-            desc_elem = listing.find("p", class_="dscr") or \
-                        listing.find("span", class_="p24_excerpt") or \
-                        listing.find("div", class_="s-prc-w") or \
-                        listing.find("div", class_="bdg _dsct _sm") or \
-                        listing.find("div", class_="info")  # Added for potential description
-
-            title = title_elem.get_text(strip=True) if title_elem else "N/A"
-            price = price_elem.get_text(strip=True) if price_elem else "N/A"
-            description = desc_elem.get_text(strip=True) if desc_elem else "N/A"
-
-            if title != "N/A":
-                products.append({
-                    "Title": title,
-                    "Price": price,
-                    "Description": description
-                })
-
+# Main Logic
+if st.button("Scrape and Filter"):
+    try:
+        # Scrape data
+        status_text.write("Scraping Jumia...")
+        products = scrape_jumia(scrape_method, max_scrolls, max_retries)
+        
+        # Filter with AI
+        status_text.write("Filtering results with AI...")
+        filtered_products = filter_products(products, query)
+        
         # Display results
-        if products:
-            st.success(f"### Scraped {len(products)} Products:")
-            for i, product in enumerate(products, 1):
-                with st.expander(f"Product {i}: {product['Title'][:50]}..."):
-                    st.write(f"**Title:** {product['Title']}")
-                    st.write(f"**Price:** {product['Price']}")
-                    st.write(f"**Description:** {product['Description']}")
-            df = pd.DataFrame(products)
+        if filtered_products:
+            st.success(f"### Scraped and Filtered {len(filtered_products)} Products:")
+            for i, product in enumerate(filtered_products, 1):
+                with st.expander(f"Product {i}: {product['title'][:50]}..."):
+                    st.write(f"**Title:** {product['title']}")
+                    st.write(f"**Price:** {product['price']}")
+                    st.write(f"**Description:** {product['description']}")
+            
+            # CSV Export
+            df = pd.DataFrame(filtered_products)
             csv = df.to_csv(index=False).encode('utf-8')
             csv_placeholder.download_button(
                 label="Download as CSV",
@@ -134,12 +182,12 @@ if st.button("Scrape Flash Sales"):
                 mime="text/csv"
             )
         else:
-            st.warning("No products found. Try Selenium or check selectors in Debug Mode.")
-
-        st.info(f"Debug: Found {len(listings)} potential listings.")
+            st.warning("No products found matching your query. Try a different query or method.")
+        
+        st.info(f"Debug: Found {len(products)} total listings before filtering.")
         progress_bar.progress(100)
-        status_text.write("Scrape complete!")
-
+        status_text.write("Complete!")
+    
     except Exception as e:
-        status_text.error(f"Error: {e}")
+        status_text.error(f"Error: {str(e)}")
         progress_bar.progress(0)
