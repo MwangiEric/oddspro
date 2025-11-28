@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 import groq
 import json
 import time
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -31,16 +33,6 @@ KENYAN_SITES = {
     "Used Cars Kenya": "https://www.usedcars.co.ke",
     "Pigiame": "https://www.pigiame.co.ke"
 }
-
-KENYAN_LOCATIONS = [
-    "Nairobi", "Mombasa", "Kisumu", "Nakuru", "Eldoret", "Thika", "Malindi", "Kitale",
-    "Machakos", "Meru", "Nyeri", "Garissa", "Kakamega", "Lamu", "Naivasha", "Nanyuki"
-]
-
-KENYAN_CAR_MAKES = [
-    "Toyota", "Subaru", "Nissan", "Mitsubishi", "Isuzu", "Mazda", "Honda", "Suzuki",
-    "Mercedes", "BMW", "Volkswagen", "Audi", "Ford", "Peugeot", "Land Rover", "Range Rover"
-]
 
 # Hardcoded SearxNG instance
 SEARXNG_URL = "https://searxng-587s.onrender.com"
@@ -86,7 +78,7 @@ def ai_enhance_car_analysis(car_data, text_content):
         """
         
         response = client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.1-70b-versatile",
             messages=[
                 {"role": "system", "content": "You are an expert at analyzing Kenyan car listings. Extract accurate information considering common Kenyan terminology and typos."},
                 {"role": "user", "content": prompt}
@@ -108,6 +100,55 @@ def ai_enhance_car_analysis(car_data, text_content):
         logger.warning(f"AI enhancement failed: {e}")
         return car_data
 
+# AI Market Insights
+def get_ai_market_insights(car_details, query):
+    """Get AI-powered market insights about the search results"""
+    client = get_groq_client()
+    if not client or not car_details:
+        return None
+    
+    try:
+        # Prepare data for analysis
+        analysis_data = {
+            "search_query": query,
+            "total_listings": len(car_details),
+            "price_range": f"KSh {min([c.get('price', 0) for c in car_details if c.get('price')]):,.0f} - KSh {max([c.get('price', 0) for c in car_details if c.get('price')]):,.0f}",
+            "popular_makes": pd.Series([c.get('make') for c in car_details if c.get('make')]).value_counts().to_dict(),
+            "common_locations": pd.Series([c.get('location') for c in car_details if c.get('location')]).value_counts().to_dict()
+        }
+        
+        prompt = f"""
+        Analyze this Kenyan car market data and provide insights:
+        
+        SEARCH QUERY: {query}
+        DATA: {json.dumps(analysis_data, indent=2)}
+        SAMPLE LISTINGS: {json.dumps(car_details[:3], indent=2)}
+        
+        Provide concise market insights focusing on:
+        1. Price competitiveness in the Kenyan market
+        2. Availability and demand patterns
+        3. Recommendations for buyers/sellers
+        4. Notable trends in the data
+        
+        Keep it brief and actionable for Kenyan car buyers.
+        """
+        
+        response = client.chat.completions.create(
+            model="llama-3.1-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a Kenyan automotive market analyst. Provide practical, localized insights."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        logger.warning(f"AI market insights failed: {e}")
+        return None
+
 # Enhanced Kenyan price extraction
 def extract_kenyan_price(text):
     """Extract price from text with all Kenyan currency formats"""
@@ -126,9 +167,6 @@ def extract_kenyan_price(text):
         # Million formats
         r'(\d+(?:\.\d{1,2})?)\s*m(?:illion)?',
         r'ksh\s*(\d+(?:\.\d{1,2})?)\s*m',
-        
-        # Standalone numbers in price context
-        r'(?:price|cost|asking|ksh|sh)\s*[:-\s]*\s*(\d{4,7})\b',
         
         # K format
         r'(\d+(?:\.\d)?)\s*k\b',
@@ -273,28 +311,14 @@ def extract_kenyan_car_details(text):
     
     return car_info
 
-# Location extraction
-def extract_kenyan_location(text):
-    """Extract Kenyan location information"""
-    if not text:
-        return None
-    
-    text_lower = text.lower()
-    
-    location_mappings = {
-        'nairobi': ['nairobi', 'nrb', 'nrobi', 'narobi'],
-        'mombasa': ['mombasa', 'msa', 'mombassa'],
-        'kisumu': ['kisumu', 'kis', 'kisum'],
-        'nakuru': ['nakuru', 'nak', 'nakur'],
-        'eldoret': ['eldoret', 'eld', 'eldret'],
-    }
-    
-    for proper_name, variations in location_mappings.items():
-        for variation in variations:
-            if variation in text_lower:
-                return proper_name.title()
-    
-    return None
+# Get site from URL
+def get_site_from_url(url):
+    """Extract full domain from URL"""
+    try:
+        domain = urlparse(url).netloc
+        return domain
+    except:
+        return url.split('/')[2] if '//' in url else url.split('/')[0]
 
 # Parse car listing from JSON data
 def parse_car_from_json(result, use_ai=False):
@@ -311,12 +335,11 @@ def parse_car_from_json(result, use_ai=False):
         price = extract_kenyan_price(combined_text)
         contacts = extract_kenyan_contacts(combined_text)
         car_details = extract_kenyan_car_details(combined_text)
-        location = extract_kenyan_location(combined_text)
         
         car_info = {
             "title": title,
             "url": url,
-            "site": "Multiple",  # Will be determined later
+            "site": get_site_from_url(url),
             "description": content[:300] + "..." if len(content) > 300 else content,
             "price": price,
             "price_display": f"KSh {price:,.0f}" if price else "Negotiable",
@@ -326,7 +349,6 @@ def parse_car_from_json(result, use_ai=False):
             "fuel_type": car_details['fuel_type'],
             "transmission": car_details['transmission'],
             "condition": car_details['condition'],
-            "location": location,
             "phones": ", ".join(contacts['phones'][:3]) if contacts['phones'] else "Not provided",
             "emails": ", ".join(contacts['emails'][:2]) if contacts['emails'] else "Not provided",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -336,6 +358,7 @@ def parse_car_from_json(result, use_ai=False):
         # AI enhancement if available
         if use_ai:
             car_info = ai_enhance_car_analysis(car_info, combined_text)
+            car_info['ai_enhanced'] = True
         
         return car_info
         
@@ -367,15 +390,6 @@ def search_kenyan_car_listings(query, selected_sites, max_results=10, use_ai=Fal
         for result in results:
             car_info = parse_car_from_json(result, use_ai)
             if car_info:
-                # Determine site name
-                url = car_info['url']
-                for site_name, site_url in KENYAN_SITES.items():
-                    if site_url in url:
-                        car_info['site'] = site_name
-                        break
-                else:
-                    car_info['site'] = "Other"
-                
                 car_details.append(car_info)
         
         return car_details
@@ -384,17 +398,17 @@ def search_kenyan_car_listings(query, selected_sites, max_results=10, use_ai=Fal
         st.error(f"Search error: {str(e)}")
         return []
 
-# Kenyan price analysis
-def analyze_kenyan_prices(car_details):
-    """Analyze prices in Kenyan context"""
+# Price analysis and visualization
+def create_price_analysis(car_details):
+    """Create comprehensive price analysis and visualizations"""
     if not car_details:
-        return {}
+        return None
     
     df = pd.DataFrame(car_details)
     valid_prices = df[df['price'].notna()]
     
     if len(valid_prices) == 0:
-        return {}
+        return None
     
     analysis = {
         'average_price': valid_prices['price'].mean(),
@@ -402,10 +416,44 @@ def analyze_kenyan_prices(car_details):
         'min_price': valid_prices['price'].min(),
         'max_price': valid_prices['price'].max(),
         'total_listings': len(car_details),
-        'priced_listings': len(valid_prices)
+        'priced_listings': len(valid_prices),
+        'price_std': valid_prices['price'].std()
     }
     
     return analysis
+
+def create_price_charts(car_details):
+    """Create interactive price charts"""
+    if not car_details:
+        return None, None
+    
+    df = pd.DataFrame(car_details)
+    priced_cars = df[df['price'].notna()]
+    
+    if len(priced_cars) < 2:
+        return None, None
+    
+    # Price distribution chart
+    fig_dist = px.histogram(
+        priced_cars, 
+        x='price',
+        title='💰 Price Distribution',
+        labels={'price': 'Price (KSh)'},
+        nbins=20
+    )
+    fig_dist.update_layout(showlegend=False)
+    
+    # Price by make chart
+    make_prices = priced_cars.groupby('make')['price'].mean().reset_index()
+    fig_make = px.bar(
+        make_prices,
+        x='make',
+        y='price',
+        title='🚗 Average Price by Make',
+        labels={'price': 'Average Price (KSh)', 'make': 'Car Make'}
+    )
+    
+    return fig_dist, fig_make
 
 # Instance health check
 def check_instance_health():
@@ -422,7 +470,7 @@ def check_instance_health():
                 pass
             time.sleep(1 - (time.time() - start_time) % 1)
         
-        return True  # Always proceed after 4 seconds
+        return True
 
 # Streamlit app
 def main():
@@ -510,13 +558,6 @@ def main():
         st.write("")  
         search_clicked = st.button("🔍 Search SmartRev", type="primary")
     
-    # Display popular makes
-    st.markdown("**Popular in Kenya:** " + " • ".join(KENYAN_CAR_MAKES[:8]))
-    
-    # AI status
-    if st.session_state.use_ai_enhancement and get_groq_client():
-        st.info("🤖 AI Enhancement: ON - Better parsing with Groq AI")
-    
     # Perform search
     if search_clicked and query:
         with st.spinner("Searching Kenyan car listings..."):
@@ -537,32 +578,76 @@ def main():
             # Convert to DataFrame
             df = pd.DataFrame(car_details)
             
-            # Price analysis
-            price_analysis = analyze_kenyan_prices(car_details)
+            # 📊 COMPREHENSIVE SUMMARY DASHBOARD
+            st.subheader("📊 Search Summary")
             
-            # Display statistics
+            # Key metrics
+            col1, col2, col3, col4, col5 = st.columns(5)
+            
+            with col1:
+                total_listings = len(car_details)
+                st.metric("Total Listings", total_listings)
+            
+            with col2:
+                priced_listings = len([c for c in car_details if c['price']])
+                st.metric("With Prices", f"{priced_listings}/{total_listings}")
+            
+            with col3:
+                contact_listings = len([c for c in car_details if c['phones'] != "Not provided"])
+                st.metric("With Contacts", f"{contact_listings}/{total_listings}")
+            
+            with col4:
+                unique_sites = df['site'].nunique()
+                st.metric("Sites Found", unique_sites)
+            
+            with col5:
+                ai_enhanced = len([c for c in car_details if c.get('ai_enhanced')])
+                if ai_enhanced > 0:
+                    st.metric("🤖 AI Enhanced", f"{ai_enhanced}/{total_listings}")
+            
+            # 💰 PRICE ANALYSIS SECTION
+            price_analysis = create_price_analysis(car_details)
             if price_analysis:
+                st.subheader("💰 Price Analysis")
+                
+                # Price metrics
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
                     st.metric("Average Price", f"KSh {price_analysis['average_price']:,.0f}")
                 
                 with col2:
-                    st.metric("Listings with Prices", f"{price_analysis['priced_listings']}/{price_analysis['total_listings']}")
+                    st.metric("Median Price", f"KSh {price_analysis['median_price']:,.0f}")
                 
                 with col3:
-                    common_make = df['make'].mode().iloc[0] if not df['make'].mode().empty else "Various"
-                    st.metric("Most Common Make", common_make)
+                    st.metric("Price Range", f"KSh {price_analysis['min_price']:,.0f} - {price_analysis['max_price']:,.0f}")
                 
                 with col4:
-                    locations_found = df['location'].nunique()
-                    st.metric("Locations", locations_found)
+                    st.metric("Price Std Dev", f"KSh {price_analysis['price_std']:,.0f}")
+                
+                # Price charts
+                fig_dist, fig_make = create_price_charts(car_details)
+                if fig_dist and fig_make:
+                    chart_col1, chart_col2 = st.columns(2)
+                    with chart_col1:
+                        st.plotly_chart(fig_dist, use_container_width=True)
+                    with chart_col2:
+                        st.plotly_chart(fig_make, use_container_width=True)
+            
+            # 🤖 AI MARKET INSIGHTS
+            if st.session_state.use_ai_enhancement and get_groq_client():
+                with st.spinner("Getting AI market insights..."):
+                    market_insights = get_ai_market_insights(car_details, query)
+                
+                if market_insights:
+                    with st.expander("🤖 AI Market Insights", expanded=True):
+                        st.write(market_insights)
             
             # Results tabs
-            tab1, tab2, tab3 = st.tabs(["📊 SmartRev Listings", "🔍 Detailed View", "💾 Export Data"])
+            tab1, tab2, tab3 = st.tabs(["📋 Listings", "🔍 Detailed View", "💾 Export Data"])
             
             with tab1:
-                display_columns = ['site', 'title', 'price_display', 'make', 'model', 'year', 'location']
+                display_columns = ['site', 'title', 'price_display', 'make', 'model', 'year']
                 display_df = df[display_columns].copy()
                 
                 st.dataframe(
@@ -576,24 +661,47 @@ def main():
             
             with tab2:
                 for i, car in enumerate(car_details):
-                    with st.expander(f"🚗 {car['make'] or 'Car'} {car['model'] or ''} - {car['site']}", expanded=i==0):
+                    with st.expander(f"🚗 {car['make'] or 'Car'} {car['model'] or ''} - {car['site']}", expanded=i<2):
                         col1, col2 = st.columns([2, 1])
                         
                         with col1:
-                            st.markdown(f"**🔗 [{car['site']} Listing]({car['url']})**")
-                            st.write(f"**Description:** {car['description']}")
+                            st.markdown(f"**🔗 Source:** `{car['site']}`")
+                            st.markdown(f"**📝 Title:** {car['title']}")
+                            st.markdown(f"**📄 Description:** {car['description']}")
                             
-                            specs = []
-                            if car['year']: specs.append(f"**Year:** {car['year']}")
-                            if car['fuel_type']: specs.append(f"**Fuel:** {car['fuel_type']}")
-                            if car['transmission']: specs.append(f"**Transmission:** {car['transmission']}")
-                            if car['condition']: specs.append(f"**Condition:** {car['condition']}")
-                            if car['location']: specs.append(f"**📍 Location:** {car['location']}")
+                            # Car specifications
+                            specs_col1, specs_col2 = st.columns(2)
+                            with specs_col1:
+                                if car['year']: st.write(f"**Year:** {car['year']}")
+                                if car['fuel_type']: st.write(f"**Fuel:** {car['fuel_type']}")
+                                if car['transmission']: st.write(f"**Transmission:** {car['transmission']}")
+                            with specs_col2:
+                                if car['condition']: st.write(f"**Condition:** {car['condition']}")
+                                if car.get('ai_enhanced'): st.write("**🤖 AI Enhanced**")
                             
-                            if specs: st.write(" | ".join(specs))
+                            # Action buttons
+                            st.markdown("---")
+                            action_col1, action_col2, action_col3, action_col4 = st.columns(4)
                             
-                            if car['source'] == 'json' and st.session_state.use_ai_enhancement:
-                                st.info("🤖 AI-enhanced data")
+                            with action_col1:
+                                if car['phones'] != "Not provided":
+                                    if st.button("📋 Copy Contacts", key=f"copy_{i}"):
+                                        st.code(car['phones'], language="text")
+                                        st.success("Contacts copied to clipboard!")
+                            
+                            with action_col2:
+                                if st.button("🔗 Share Listing", key=f"share_{i}"):
+                                    st.code(car['url'], language="text")
+                                    st.success("URL copied to clipboard!")
+                            
+                            with action_col3:
+                                if car['phones'] != "Not provided":
+                                    first_phone = car['phones'].split(',')[0].strip()
+                                    st.markdown(f"[📞 Call {first_phone}](tel:{first_phone})")
+                            
+                            with action_col4:
+                                if st.button("⭐ Save", key=f"save_{i}"):
+                                    st.success("Listing saved!")
                         
                         with col2:
                             if car['price']:
@@ -602,15 +710,17 @@ def main():
                                 st.write("**Price:** Negotiable")
                             
                             if car['phones'] != "Not provided":
-                                st.write(f"**📞 Contact:** {car['phones']}")
+                                st.markdown("**📞 Contacts:**")
+                                st.code(car['phones'], language="text")
             
             with tab3:
-                st.subheader("Export Kenyan Car Data")
+                st.subheader("💾 Export Data")
                 
                 export_df = df.copy()
                 export_df['search_query'] = query
                 export_df['export_date'] = datetime.now().strftime("%Y-%m-%d")
                 
+                # CSV Export
                 csv = export_df.to_csv(index=False)
                 st.download_button(
                     label="📥 Download CSV",
@@ -618,6 +728,17 @@ def main():
                     file_name=f"smartrev_kenya_cars_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv",
                 )
+                
+                # Export contacts only
+                all_contacts = [c for c in car_details if c['phones'] != "Not provided"]
+                if all_contacts:
+                    contacts_text = "\n".join([f"{c['make']} {c['model']} - {c['phones']}" for c in all_contacts])
+                    st.download_button(
+                        label="📞 Export Contacts Only",
+                        data=contacts_text,
+                        file_name=f"car_contacts_{datetime.now().strftime('%Y%m%d')}.txt",
+                        mime="text/plain",
+                    )
                 
                 st.write("**Sample data:**")
                 st.dataframe(export_df.head(3))
