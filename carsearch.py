@@ -10,7 +10,6 @@ import groq
 import json
 import time
 import plotly.express as px
-import plotly.graph_objects as go
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -99,55 +98,6 @@ def ai_enhance_car_analysis(car_data, text_content):
     except Exception as e:
         logger.warning(f"AI enhancement failed: {e}")
         return car_data
-
-# AI Market Insights
-def get_ai_market_insights(car_details, query):
-    """Get AI-powered market insights about the search results"""
-    client = get_groq_client()
-    if not client or not car_details:
-        return None
-    
-    try:
-        # Prepare data for analysis
-        analysis_data = {
-            "search_query": query,
-            "total_listings": len(car_details),
-            "price_range": f"KSh {min([c.get('price', 0) for c in car_details if c.get('price')]):,.0f} - KSh {max([c.get('price', 0) for c in car_details if c.get('price')]):,.0f}",
-            "popular_makes": pd.Series([c.get('make') for c in car_details if c.get('make')]).value_counts().to_dict(),
-            "common_locations": pd.Series([c.get('location') for c in car_details if c.get('location')]).value_counts().to_dict()
-        }
-        
-        prompt = f"""
-        Analyze this Kenyan car market data and provide insights:
-        
-        SEARCH QUERY: {query}
-        DATA: {json.dumps(analysis_data, indent=2)}
-        SAMPLE LISTINGS: {json.dumps(car_details[:3], indent=2)}
-        
-        Provide concise market insights focusing on:
-        1. Price competitiveness in the Kenyan market
-        2. Availability and demand patterns
-        3. Recommendations for buyers/sellers
-        4. Notable trends in the data
-        
-        Keep it brief and actionable for Kenyan car buyers.
-        """
-        
-        response = client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a Kenyan automotive market analyst. Provide practical, localized insights."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500
-        )
-        
-        return response.choices[0].message.content
-        
-    except Exception as e:
-        logger.warning(f"AI market insights failed: {e}")
-        return None
 
 # Enhanced Kenyan price extraction
 def extract_kenyan_price(text):
@@ -324,9 +274,9 @@ def get_site_from_url(url):
 def parse_car_from_json(result, use_ai=False):
     """Parse car listing primarily from JSON data"""
     try:
-        title = result.get('title', '')
-        content = result.get('content', '')
-        url = result.get('url', '')
+        title = result.get('title', 'No Title')
+        content = result.get('content', result.get('snippet', ''))
+        url = result.get('url', result.get('link', ''))
         
         # Combine title and content for parsing
         combined_text = f"{title} {content}"
@@ -364,33 +314,79 @@ def parse_car_from_json(result, use_ai=False):
         
     except Exception as e:
         logger.error(f"Error parsing JSON result: {e}")
-        return None
+        # Return basic info instead of failing
+        return {
+            "title": result.get('title', 'Error parsing'),
+            "url": result.get('url', ''),
+            "site": get_site_from_url(result.get('url', '')),
+            "description": "Failed to parse details",
+            "price": None,
+            "price_display": "Unknown",
+            "make": None,
+            "model": None,
+            "error": str(e)
+        }
 
 # Enhanced search function
 def search_kenyan_car_listings(query, selected_sites, max_results=10, use_ai=False):
     """Search for car listings using JSON-first approach"""
     try:
         # Build query - if no sites selected, just add Kenya
+        car_context = "car vehicles for sale"
+        
         if not selected_sites:
-            enhanced_query = f"{query} Kenya"
+            enhanced_query = f"{query} {car_context} Kenya"
             st.info("🔍 Searching across Kenya...")
         else:
             site_queries = " OR ".join([f"site:{urlparse(site).netloc}" for site in selected_sites])
-            enhanced_query = f"({query}) ({site_queries})"
+            enhanced_query = f"({query} {car_context}) ({site_queries})"
             st.info(f"🔍 Searching {len(selected_sites)} selected sites...")
+        
+        # Show the actual query being sent
+        st.write(f"**🔍 Search Query:** `{enhanced_query}`")
         
         params = {"q": enhanced_query, "format": "json", "count": max_results}
         response = requests.get(SEARXNG_URL, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
-        results = data.get("results", [])[:max_results]
+        results = data.get("results", [])
+        
+        # Show raw results count
+        st.write(f"**📦 Raw Results Found:** {len(results)}")
 
         car_details = []
         
-        for result in results:
-            car_info = parse_car_from_json(result, use_ai)
-            if car_info:
-                car_details.append(car_info)
+        # Create container for live results
+        results_container = st.container()
+        
+        with results_container:
+            st.subheader("🔄 Live Processing")
+            
+            for i, result in enumerate(results):
+                # Show raw result immediately
+                with st.expander(f"📦 Raw Result {i+1}", expanded=False):
+                    st.json(result)
+                
+                # Parse the result
+                with st.spinner(f"Parsing result {i+1}..."):
+                    car_info = parse_car_from_json(result, use_ai)
+                
+                if car_info:
+                    car_details.append(car_info)
+                    
+                    # Show parsed result
+                    with st.expander(f"✅ Parsed: {car_info['title'][:50]}...", expanded=False):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**Site:** {car_info['site']}")
+                            st.write(f"**Price:** {car_info['price_display']}")
+                            st.write(f"**Make/Model:** {car_info['make']} {car_info['model']}")
+                        with col2:
+                            st.write(f"**Contacts:** {car_info['phones']}")
+                            if car_info.get('ai_enhanced'):
+                                st.success("🤖 AI Enhanced")
+                
+                st.markdown("---")
         
         return car_details
 
@@ -421,39 +417,6 @@ def create_price_analysis(car_details):
     }
     
     return analysis
-
-def create_price_charts(car_details):
-    """Create interactive price charts"""
-    if not car_details:
-        return None, None
-    
-    df = pd.DataFrame(car_details)
-    priced_cars = df[df['price'].notna()]
-    
-    if len(priced_cars) < 2:
-        return None, None
-    
-    # Price distribution chart
-    fig_dist = px.histogram(
-        priced_cars, 
-        x='price',
-        title='💰 Price Distribution',
-        labels={'price': 'Price (KSh)'},
-        nbins=20
-    )
-    fig_dist.update_layout(showlegend=False)
-    
-    # Price by make chart
-    make_prices = priced_cars.groupby('make')['price'].mean().reset_index()
-    fig_make = px.bar(
-        make_prices,
-        x='make',
-        y='price',
-        title='🚗 Average Price by Make',
-        labels={'price': 'Average Price (KSh)', 'make': 'Car Make'}
-    )
-    
-    return fig_dist, fig_make
 
 # Instance health check
 def check_instance_health():
@@ -573,7 +536,7 @@ def main():
             - Selecting different sites
             """)
         else:
-            st.success(f"Found {len(car_details)} Kenyan car listings")
+            st.success(f"✅ Found {len(car_details)} Kenyan car listings")
             
             # Convert to DataFrame
             df = pd.DataFrame(car_details)
@@ -623,28 +586,10 @@ def main():
                     st.metric("Price Range", f"KSh {price_analysis['min_price']:,.0f} - {price_analysis['max_price']:,.0f}")
                 
                 with col4:
-                    st.metric("Price Std Dev", f"KSh {price_analysis['price_std']:,.0f}")
-                
-                # Price charts
-                fig_dist, fig_make = create_price_charts(car_details)
-                if fig_dist and fig_make:
-                    chart_col1, chart_col2 = st.columns(2)
-                    with chart_col1:
-                        st.plotly_chart(fig_dist, use_container_width=True)
-                    with chart_col2:
-                        st.plotly_chart(fig_make, use_container_width=True)
-            
-            # 🤖 AI MARKET INSIGHTS
-            if st.session_state.use_ai_enhancement and get_groq_client():
-                with st.spinner("Getting AI market insights..."):
-                    market_insights = get_ai_market_insights(car_details, query)
-                
-                if market_insights:
-                    with st.expander("🤖 AI Market Insights", expanded=True):
-                        st.write(market_insights)
+                    st.metric("Listings Priced", f"{price_analysis['priced_listings']}/{price_analysis['total_listings']}")
             
             # Results tabs
-            tab1, tab2, tab3 = st.tabs(["📋 Listings", "🔍 Detailed View", "💾 Export Data"])
+            tab1, tab2 = st.tabs(["📋 Final Results", "💾 Export Data"])
             
             with tab1:
                 display_columns = ['site', 'title', 'price_display', 'make', 'model', 'year']
@@ -660,60 +605,6 @@ def main():
                 )
             
             with tab2:
-                for i, car in enumerate(car_details):
-                    with st.expander(f"🚗 {car['make'] or 'Car'} {car['model'] or ''} - {car['site']}", expanded=i<2):
-                        col1, col2 = st.columns([2, 1])
-                        
-                        with col1:
-                            st.markdown(f"**🔗 Source:** `{car['site']}`")
-                            st.markdown(f"**📝 Title:** {car['title']}")
-                            st.markdown(f"**📄 Description:** {car['description']}")
-                            
-                            # Car specifications
-                            specs_col1, specs_col2 = st.columns(2)
-                            with specs_col1:
-                                if car['year']: st.write(f"**Year:** {car['year']}")
-                                if car['fuel_type']: st.write(f"**Fuel:** {car['fuel_type']}")
-                                if car['transmission']: st.write(f"**Transmission:** {car['transmission']}")
-                            with specs_col2:
-                                if car['condition']: st.write(f"**Condition:** {car['condition']}")
-                                if car.get('ai_enhanced'): st.write("**🤖 AI Enhanced**")
-                            
-                            # Action buttons
-                            st.markdown("---")
-                            action_col1, action_col2, action_col3, action_col4 = st.columns(4)
-                            
-                            with action_col1:
-                                if car['phones'] != "Not provided":
-                                    if st.button("📋 Copy Contacts", key=f"copy_{i}"):
-                                        st.code(car['phones'], language="text")
-                                        st.success("Contacts copied to clipboard!")
-                            
-                            with action_col2:
-                                if st.button("🔗 Share Listing", key=f"share_{i}"):
-                                    st.code(car['url'], language="text")
-                                    st.success("URL copied to clipboard!")
-                            
-                            with action_col3:
-                                if car['phones'] != "Not provided":
-                                    first_phone = car['phones'].split(',')[0].strip()
-                                    st.markdown(f"[📞 Call {first_phone}](tel:{first_phone})")
-                            
-                            with action_col4:
-                                if st.button("⭐ Save", key=f"save_{i}"):
-                                    st.success("Listing saved!")
-                        
-                        with col2:
-                            if car['price']:
-                                st.metric("Price", f"KSh {car['price']:,.0f}")
-                            else:
-                                st.write("**Price:** Negotiable")
-                            
-                            if car['phones'] != "Not provided":
-                                st.markdown("**📞 Contacts:**")
-                                st.code(car['phones'], language="text")
-            
-            with tab3:
                 st.subheader("💾 Export Data")
                 
                 export_df = df.copy()
@@ -728,17 +619,6 @@ def main():
                     file_name=f"smartrev_kenya_cars_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv",
                 )
-                
-                # Export contacts only
-                all_contacts = [c for c in car_details if c['phones'] != "Not provided"]
-                if all_contacts:
-                    contacts_text = "\n".join([f"{c['make']} {c['model']} - {c['phones']}" for c in all_contacts])
-                    st.download_button(
-                        label="📞 Export Contacts Only",
-                        data=contacts_text,
-                        file_name=f"car_contacts_{datetime.now().strftime('%Y%m%d')}.txt",
-                        mime="text/plain",
-                    )
                 
                 st.write("**Sample data:**")
                 st.dataframe(export_df.head(3))
