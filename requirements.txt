@@ -6,3 +6,5 @@ webdriver-manager
 pandas
 transformers
 torch
+groq
+json
