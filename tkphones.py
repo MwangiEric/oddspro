@@ -4,7 +4,7 @@ import json
 import time
 import urllib.parse
 import re
-import openai
+import groq
 from bs4 import BeautifulSoup
 
 ############################ CONFIG ################################
