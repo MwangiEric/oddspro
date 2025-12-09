@@ -132,55 +132,63 @@ phone = st.text_input("Search phone / keywords", value="samsung a17 price kenya"
 persona = st.selectbox("Buyer persona", ["Any", "Tech-savvy pros", "Budget students", "Camera creators", "Status execs"])
 tone = st.selectbox("Brand tone", ["Playful", "Luxury", "Rational", "FOMO"])
 
+# User choice for using SearxNG
+use_searxng = st.radio("Use SearxNG for additional search?", ["Yes", "No"], index=1)
+
 if st.button("Generate cards"):
     with st.spinner("Scraping + AI crafting…"):
-        raw = searx_raw(phone, pages=2)
-        specs = gsm_specs(phone)
+        if use_searxng == "Yes":
+            raw = searx_raw(phone, pages=2)
+        else:
+            raw = []
+
+        # Use Groq with the phone input directly
         variants = ai_pack(phone, raw, persona if persona != "Any" else "Budget students", tone)
 
-    # ---------- RESULT SECTION ----------
-    if variants:
-        correct_name = variants[0]["correct_name"]
-        st.header(correct_name)
+        # If no variants from Groq, we can optionally display a message or handle it as needed
+        if variants:
+            correct_name = variants[0]["correct_name"]
+            st.header(correct_name)
 
-        # Display specs
-        if specs:
-            st.subheader("🔍 Attractive Specs (Top 10)")
-            for line in specs:
-                st.markdown(f"- {line}")
+            # Display specs
+            specs = gsm_specs(correct_name) 
+            if specs:
+                st.subheader("🔍 Attractive Specs (Top 10)")
+                for line in specs:
+                    st.markdown(f"- {line}")
 
-        # Display prices in a stylish table
-        if variants[0].get("prices"):
-            st.subheader("💰 Price Spots")
-            price_data = []
-            for line in variants[0]["prices"].split('\n'):
-                parts = line.split(" - ")
-                if len(parts) == 3:
-                    site, price, url = [p.strip() for p in parts]
-                    price_data.append({"Website": site, "Price": price, "URL": url})
-            if price_data:
-                price_df = pd.DataFrame(price_data)
-                st.table(price_df)  # Use tables for better readability
+            # Display prices in a stylish table
+            if variants[0].get("prices"):
+                st.subheader("💰 Price Spots")
+                price_data = []
+                for line in variants[0]["prices"].split('\n'):
+                    parts = line.split(" - ")
+                    if len(parts) == 3:
+                        site, price, url = [p.strip() for p in parts]
+                        price_data.append({"Website": site, "Price": price, "URL": url})
+                if price_data:
+                    price_df = pd.DataFrame(price_data)
+                    st.table(price_df)  # Use tables for better readability
 
-        # Generate and display flyer ideas
-        if variants[0].get("banners"):
-            st.subheader("🖼️ Flyer Ideas")
-            st.write(variants[0]["banners"])
+            # Generate and display flyer ideas
+            if variants[0].get("banners"):
+                st.subheader("🖼️ Flyer Ideas")
+                st.write(variants[0]["banners"])
 
-        # Social media posts
-        if variants[0].get("social"):
-            st.subheader("📲 Social Media Posts")
-            social_lines = variants[0]["social"].splitlines()
-            if len(social_lines) >= 2:
-                st.markdown("**Facebook Post**")
-                st.text(social_lines[0])
-                st.markdown("**TikTok Post**")
-                st.text(social_lines[1])
+            # Social media posts
+            if variants[0].get("social"):
+                st.subheader("📲 Social Media Posts")
+                social_lines = variants[0]["social"].splitlines()
+                if len(social_lines) >= 2:
+                    st.markdown("**Facebook Post**")
+                    st.text(social_lines[0])
+                    st.markdown("**TikTok Post**")
+                    st.text(social_lines[1])
 
-        # Hashtags
-        if variants[0].get("hashtags"):
-            st.subheader("🏷️ Hashtags")
-            st.text(variants[0]["hashtags"])
+            # Hashtags
+            if variants[0].get("hashtags"):
+                st.subheader("🏷️ Hashtags")
+                st.text(variants[0]["hashtags"])
 
 else:
     st.info("Fill fields and hit Generate cards.")
