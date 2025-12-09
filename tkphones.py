@@ -59,8 +59,6 @@ def analyse(raw: List[dict]) -> pd.DataFrame:
         else:
             price = None
 
-price_raw.group(2))) if price_raw and price_raw.group(2).strip() else None
-
         # Warranty
         warranty = "Yes" if WARRANTY_RE.search(text) else "No"
 
