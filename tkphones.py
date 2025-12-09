@@ -51,9 +51,15 @@ def analyse(raw: List[dict]) -> pd.DataFrame:
         snippet = item.get("content", "")
         text = title + " " + snippet
 
-        # Price
+                # Price
         price_raw = PRICE_RE.search(text)
-        price = int(re.sub(r"[^\d]", "", price_raw.group(2))) if price_raw and price_raw.group(2).strip() else None
+        if price_raw:
+            digits_only = re.sub(r"[^\d]", "", price_raw.group(2))
+            price = int(digits_only) if digits_only else None
+        else:
+            price = None
+
+price_raw.group(2))) if price_raw and price_raw.group(2).strip() else None
 
         # Warranty
         warranty = "Yes" if WARRANTY_RE.search(text) else "No"
