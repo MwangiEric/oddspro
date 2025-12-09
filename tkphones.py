@@ -12,6 +12,9 @@ SEARX_URL = "https://searxng-587s.onrender.com/search"
 RATE_LIMIT = 3
 LAST = 0
 MODEL = "llama-3.1-8b-instant"
+STORE_NAME = "Tripple K Communications"
+STORE_URL = "https://www.tripplek.co.ke"
+STORE_PHONE = "0715679912"
 #####################################################################
 
 
@@ -45,44 +48,30 @@ def gsm_specs(phone: str) -> list[str]:
         device = urllib.parse.urljoin("https://www.gsmarena.com/", link["href"])
         soup2 = BeautifulSoup(requests.get(device, timeout=15).text, "html.parser")
         return [f"{tr.find_all('td')[0].get_text(strip=True)}: {tr.find_all('td')[1].get_text(strip=True)}"
-                for tr in soup2.select("table.specs tr") if len(tr.find_all("td")) == 2][:8]  # max 8 lines
+                for tr in soup2.select("table.specs tr") if len(tr.find_all("td")) == 2][:10]  # max 10
     except Exception:
         return []
 
 
-# ---------- AI AD PACK (plain text) ----------
+# ---------- AI PACK (plain text) ----------
 def ai_pack(phone: str, raw_json: list, persona: str, tone: str) -> list[dict]:
     hashtag_text = " ".join([r.get("title", "") + " " + r.get("content", "") for r in raw_json])
-    prompt = f"""Kenyan phone-marketing assistant.
+    prompt = f"""Kenyan phone-marketing assistant for {STORE_NAME}.
 Phone: {phone}
 Persona: {persona}
 Tone: {tone}
+Store: {STORE_NAME} | {STORE_URL} | {STORE_PHONE}
 Raw text: {hashtag_text}
 
 Return ONLY plain text (no JSON/objects) with exactly 3 blocks separated by "-----".
 
 Each block contains:
-1. One spec per line (max 6 lines)
-2. "WEBSITES:" followed by 3 lines: "site - price - url" (use real URLs from raw text)
-3. "BANNERS:" 2 full poster lines
-4. "SOCIAL:" 3 ready-to-post texts (Tweet, IG, FB) each on its own line
-10 relevant hashtags at the end (space-separated)
-
-Example block layout:
-spec line 1
-spec line 2
-WEBSITES:
-jumia.co.ke - KSh 65,000 - https://...
-kilimall.co.ke - KSh 67,500 - https://...
-safaricom.co.ke - KSh 69,900 - https://...
-BANNERS:
-Line 1 poster text
-Line 2 poster text
-SOCIAL:
-Tweet text under 280 chars
-IG caption under 150 chars emoji OK
-FB post text under 300 chars
-#hashtag1 #hashtag2 ... #hashtag10
+1. "CORRECT_NAME:" official commercial name (max 4 words)
+2. "ATTRACTIVE_SPECS:" most appealing specs first (max 10 lines, one per line)
+3. "PRICES:" 3 lines: website - raw price - url (use real URLs from raw text)
+4. "BANNERS:" 2 full poster lines
+5. "SOCIAL:" 3 ready-to-post texts (Tweet, IG, FB) each on its own line
+6. "HASHTAGS:" 10 relevant hashtags, space-separated
 -----
 <next block>
 -----
@@ -96,16 +85,19 @@ FB post text under 300 chars
         raw = out.choices[0].message.content.strip()
         blocks = [b.strip() for b in raw.split("-----") if b.strip()]
         variants = []
-        for blk in blocks[:3]:  # max 3
+        for blk in blocks[:3]:
             lines = [l.strip() for l in blk.splitlines() if l.strip()]
-            # quick parse
-            websites = [l.replace("WEBSITES:", "").strip() for l in lines if l.startswith("WEBSITES:")]
-            banners  = [l.replace("BANNERS:", "").strip() for l in lines if l.startswith("BANNERS:")]
-            social   = [l.replace("SOCIAL:", "").strip() for l in lines if l.startswith("SOCIAL:")]
-            hashtags = [l for l in lines if l.startswith("#")][0] if any(l.startswith("#") for l in lines) else "#phone"
+            # quick split
+            correct_name = [l.replace("CORRECT_NAME:", "").strip() for l in lines if l.startswith("CORRECT_NAME:")][0]
+            specs        = [l.replace("ATTRACTIVE_SPECS:", "").strip() for l in lines if l.startswith("ATTRACTIVE_SPECS:")]
+            prices       = [l.replace("PRICES:", "").strip() for l in lines if l.startswith("PRICES:")]
+            banners      = [l.replace("BANNERS:", "").strip() for l in lines if l.startswith("BANNERS:")]
+            social       = [l.replace("SOCIAL:", "").strip() for l in lines if l.startswith("SOCIAL:")]
+            hashtags     = [l for l in lines if l.startswith("#")][0] if any(l.startswith("#") for l in lines) else "#PhoneDeals"
             variants.append({
-                "specs": "\n".join([l for l in lines if not l.startswith(("WEBSITES:", "BANNERS:", "SOCIAL:", "#"))]),
-                "websites": websites,
+                "correct_name": correct_name,
+                "specs": "\n".join([l for l in lines if l.startswith("ATTRACTIVE_SPECS:")]),
+                "prices": prices,
                 "banners": "\n".join(banners),
                 "social": "\n".join(social),
                 "hashtags": hashtags,
@@ -117,10 +109,9 @@ FB post text under 300 chars
 
 
 ############################  UI  ####################################
-st.set_page_config(page_title="Phone Ad Cards", layout="wide")
-st.title("📱 Phone Ad Cards – Search → Specs → AI Copy")
+st.set_page_config(page_config="Phone Ad Cards – Tripple K", layout="wide")
+st.title("📱 Phone Ad Cards – Tripple K Communications")
 
-# ---------- SEARCH ----------
 phone = st.text_input("Search phone / keywords", value="samsung a17 price kenya")
 persona = st.selectbox("Buyer persona", ["Any", "Tech-savvy pros", "Budget students", "Camera creators", "Status execs"])
 tone = st.selectbox("Brand tone", ["Playful", "Luxury", "Rational", "FOMO"])
@@ -131,31 +122,54 @@ if st.button("Generate cards"):
         specs = gsm_specs(phone)
         variants = ai_pack(phone, raw, persona if persona != "Any" else "Budget students", tone)
 
-    # ---------- GSMARENA CARD ----------
+    # ---------- CORRECT NAME + SPECS ----------
+    if variants:
+        correct = variants[0]["correct_name"]
+        st.header(correct)
+    else:
+        correct = phone
+        st.header(correct)
+
     if specs:
-        with st.expander("🔍 GSMArena specs (one per line)"):
+        with st.expander("🔍 Attractive specs (top 10)"):
             for line in specs:
                 st.markdown(f"- {line}")
 
-    # ---------- AD VARIANT CARDS ----------
+    # ---------- PRICE TABLE ----------
+    if variants and variants[0]["prices"]:
+        st.subheader("💰 Price spots")
+        for line in variants[0]["prices"]:
+            parts = line.split(" - ")
+            if len(parts) == 3:
+                site, price, url = parts
+                site = site.strip()
+                price = price.strip()
+                url = url.strip()
+                col1, col2, col3 = st.columns([1, 1, 3])
+                col1.markdown(f"**{site}**")
+                col2.markdown(f"`{price}`")
+                col3.markdown(f"[🔗 link]({url})")
+            else:
+                st.text(line)  # fallback
+
+    # ---------- BANNER IDEAS ----------
     if variants:
-        st.subheader("AI Ad Variants (plain lists)")
-        for idx, v in enumerate(variants):
-            with st.container(border=True):
-                st.markdown(f"### Variant {idx+1}")
-                c1, c2 = st.columns([1, 2])
-                with c1:
-                    st.markdown("**Specs**")
-                    st.text(v["specs"])
-                    st.markdown("**Websites**")
-                    for w in v["websites"]:
-                        st.text(w)
-                    st.markdown("**Banner ideas**")
-                    st.text(v["banners"])
-                with c2:
-                    st.markdown("**Social pack**")
-                    st.text(v["social"])
-                    st.markdown("**Hashtags**")
-                    st.text(v["hashtags"])
-    else:
-        st.info("No AI variants returned – try again.")
+        st.subheader("🖼️ Banner ideas")
+        for v in variants:
+            st.text(v["banners"])
+
+    # ---------- SOCIAL PACK ----------
+    if variants:
+        st.subheader("📲 Social pack")
+        for v in variants:
+            st.markdown("**Tweet**")
+            st.text(v["social"].splitlines()[0])
+            st.markdown("**IG caption**")
+            st.text(v["social"].splitlines()[1])
+            st.markdown("**FB post**")
+            st.text(v["social"].splitlines()[2])
+            st.markdown("**Hashtags**")
+            st.text(v["hashtags"])
+
+else:
+    st.info("Fill fields and hit Generate cards.")
