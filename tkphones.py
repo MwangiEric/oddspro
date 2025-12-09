@@ -106,8 +106,9 @@ Hashtag source text: {hashtag_text}
 
 Return ONLY valid JSON list with 3 variants. Each variant has:
 - specs: string (concise bullet specs, max 6 lines)
-- price_range: string (e.g. "KES 65 000 – 75 000")
-- urls: list of 3 {"title": "...", "url": "...", "site": "..."} objects
+- price_range: string (e.g. "Ksh 65,000 75,000)
+- site name from urls in json
+- urls: urls from json that lead to the site
 - tweet: string (max 280 chars)
 - ig_caption: string (max 150 chars, emoji allowed)
 - hashtags: string (10 hashtags extracted from the hashtag source text above, space-separated)
