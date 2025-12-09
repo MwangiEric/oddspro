@@ -67,8 +67,8 @@ Return ONLY plain text (no JSON/objects) with exactly 3 blocks separated by "---
 Each block contains:
 1. "CORRECT_NAME:" official commercial name (max 4 words)
 2. "ATTRACTIVE_SPECS:" most appealing specs first (max 10 lines, one per line)
-3. "PRICES:" 3 lines: website - raw price - url (use real URLs from raw text)
-4. "BANNERS:" 2 full poster lines
+3. "PRICES:" website - raw price - url (use real URLs from raw text)
+4. "BANNERS:" ganner ideas
 5. "SOCIAL:" 3 ready-to-post texts (Tweet, IG, FB) each on its own line
 6. "HASHTAGS:" 10 relevant hashtags, space-separated
 -----
@@ -108,7 +108,7 @@ Each block contains:
 
 
 ############################  UI  ####################################
-st.set_page_config(page_config="Phone Ad Cards – Tripple K", layout="wide")
+st.set_page_config(page_title="Phone Ad Cards – Tripple K", layout="wide")
 st.title("📱 Phone Ad Cards – Tripple K Communications")
 
 phone = st.text_input("Search phone / keywords", value="samsung a17 price kenya")
