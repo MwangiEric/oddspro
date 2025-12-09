@@ -15,7 +15,7 @@ client = Groq(api_key=GROQ_KEY, timeout=30)
 SEARX_URL = "https://searxng-587s.onrender.com/search"
 RATE_LIMIT = 3
 LAST = 0
-MODEL = "llama-3.1-8b-instant"
+MODEL = "llama-3.1-8b-8b-instant"
 STORE_NAME = "Tripple K Communications"
 STORE_URL = "https://www.tripplek.co.ke"
 STORE_PHONE = "0715679912"
@@ -58,6 +58,7 @@ def gsm_specs(phone: str) -> list[str]:
         soup = BeautifulSoup(requests.get(search, timeout=15).text, "html.parser")
         link = soup.select_one("div.makers a")
         if not link:
+            st.warning("No device found on GSMArena.")
             return []
         device = urllib.parse.urljoin("https://www.gsmarena.com/", link["href"])
         soup2 = BeautifulSoup(requests.get(device, timeout=15).text, "html.parser")
@@ -117,8 +118,10 @@ Each block contains:
                 elif line.startswith("SOCIAL:"):
                     data["social"] = line.replace("SOCIAL:", "").strip()
                 elif line.startswith("#"):
-                    data["hashtags"] = line.strip() if "hashtags" not in data else data["hashtags"] + " " + line.strip()    
+                    data["hashtags"] = line.strip() if "hashtags" not in data else data["hashtags"] + " " + line.strip()
+            
             variants.append(data)  # ensure we append the full data dictionary
+        
         return variants
     except Exception as e:
         st.error(f"Groq error: {e}")
@@ -137,20 +140,21 @@ use_searxng = st.radio("Use SearxNG for additional search?", ["Yes", "No"], inde
 
 if st.button("Generate cards"):
     with st.spinner("Scraping + AI crafting…"):
+        # Use SearxNG to get additional data if selected
         if use_searxng == "Yes":
             raw = searx_raw(phone, pages=2)
         else:
             raw = []
 
-        # Use Groq with the phone input directly
+        # Call Groq to get information about the phone
         variants = ai_pack(phone, raw, persona if persona != "Any" else "Budget students", tone)
 
-        # If no variants from Groq, we can optionally display a message or handle it as needed
-        if variants:
+        # Check if we have valid variants
+        if variants and 'correct_name' in variants[0]:
             correct_name = variants[0]["correct_name"]
             st.header(correct_name)
 
-            # Display specs
+            # Fetch specs using the correct name
             specs = gsm_specs(correct_name) 
             if specs:
                 st.subheader("🔍 Attractive Specs (Top 10)")
@@ -158,7 +162,7 @@ if st.button("Generate cards"):
                     st.markdown(f"- {line}")
 
             # Display prices in a stylish table
-            if variants[0].get("prices"):
+            if "prices" in variants[0]:
                 st.subheader("💰 Price Spots")
                 price_data = []
                 for line in variants[0]["prices"].split('\n'):
@@ -166,17 +170,21 @@ if st.button("Generate cards"):
                     if len(parts) == 3:
                         site, price, url = [p.strip() for p in parts]
                         price_data.append({"Website": site, "Price": price, "URL": url})
+                    else:
+                        st.warning("Invalid price format detected.")
+                
+                # Create and display the price table
                 if price_data:
                     price_df = pd.DataFrame(price_data)
                     st.table(price_df)  # Use tables for better readability
 
             # Generate and display flyer ideas
-            if variants[0].get("banners"):
+            if "banners" in variants[0]:
                 st.subheader("🖼️ Flyer Ideas")
                 st.write(variants[0]["banners"])
 
             # Social media posts
-            if variants[0].get("social"):
+            if "social" in variants[0]:
                 st.subheader("📲 Social Media Posts")
                 social_lines = variants[0]["social"].splitlines()
                 if len(social_lines) >= 2:
@@ -186,9 +194,11 @@ if st.button("Generate cards"):
                     st.text(social_lines[1])
 
             # Hashtags
-            if variants[0].get("hashtags"):
+            if "hashtags" in variants[0]:
                 st.subheader("🏷️ Hashtags")
                 st.text(variants[0]["hashtags"])
 
+        else:
+            st.warning("No data returned from Groq. Please check the input.")
 else:
     st.info("Fill fields and hit Generate cards.")
