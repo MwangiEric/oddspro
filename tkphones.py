@@ -54,7 +54,7 @@ def analyse(raw: List[dict]) -> pd.DataFrame:
                 # Price
         price_raw = PRICE_RE.search(text)
         if price_raw:
-            digits_only = re.sub(r"[^\d]", "", price_raw.group(2))
+            digits_only = " "
             price = int(digits_only) if digits_only else None
         else:
             price = None
