@@ -62,7 +62,7 @@ Raw text: {hashtag_text}
 Return ONLY valid JSON list with 3 variants. Each variant has:
 - specs: string (one spec per line, max 6 lines)
 - price_range: string (e.g. "KES 65 000 – 75 000")
-- urls: list of 3 {"title": "...", "url": "...", "site": "..."} objects
+- urls: list
 - tweet: string (max 280 chars)
 - ig_caption: string (max 150 chars, emoji allowed)
 - hashtags: string (10 hashtags, space-separated)
