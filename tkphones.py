@@ -11,11 +11,12 @@ GROQ_KEY = st.secrets.get("groq_key", "")
 if not GROQ_KEY:
     st.error("Add groq_key to .streamlit/secrets.toml")
     st.stop()
+
 client = Groq(api_key=GROQ_KEY, timeout=30)
 SEARX_URL = "https://searxng-587s.onrender.com/search"
 RATE_LIMIT = 3
 LAST = 0
-MODEL = "llama-3.1-8b-8b-instant"
+MODEL = "llama-3.1-8b-instant"
 STORE_NAME = "Tripple K Communications"
 STORE_URL = "https://www.tripplek.co.ke"
 STORE_PHONE = "0715679912"
@@ -34,22 +35,21 @@ def searx_raw(phone: str, pages: int = 2) -> list:
             r = requests.get(
                 SEARX_URL,
                 params={
-                    "q": phone, 
-                    "category_general": "1", 
+                    "q": phone,
+                    "category_general": "1",
                     "language": "auto",
-                    "safesearch": "0", 
-                    "format": "json", 
+                    "safesearch": "0",
+                    "format": "json",
                     "pageno": page
                 },
                 timeout=25,
             )
-            r.raise_for_status()  # Raise an error for bad responses
+            r.raise_for_status()
             out.extend(r.json().get("results", []))
         except requests.exceptions.RequestException as e:
             st.error(f"Error fetching search results: {e}")
             return []
     return out
-
 
 # ---------- GSMARENA ----------
 def gsm_specs(phone: str) -> list[str]:
@@ -63,11 +63,10 @@ def gsm_specs(phone: str) -> list[str]:
         device = urllib.parse.urljoin("https://www.gsmarena.com/", link["href"])
         soup2 = BeautifulSoup(requests.get(device, timeout=15).text, "html.parser")
         return [f"{tr.find_all('td')[0].get_text(strip=True)}: {tr.find_all('td')[1].get_text(strip=True)}"
-                for tr in soup2.select("table.specs tr") if len(tr.find_all("td")) == 2][:10]  # max 10
+                for tr in soup2.select("table.specs tr") if len(tr.find_all("td")) == 2][:10]
     except Exception as e:
         st.error(f"Error fetching specifications: {e}")
         return []
-
 
 # ---------- AI PACK (plain text) ----------
 def ai_pack(phone: str, raw_json: list, persona: str, tone: str) -> list[dict]:
@@ -103,10 +102,9 @@ Each block contains:
         blocks = [b.strip() for b in raw.split("-----") if b.strip()]
         variants = []
 
-        for blk in blocks[:3]:
-            lines = [l.strip() for l in blk.splitlines() if l.strip()]
+        for blk in blocks:
             data = {}
-            for line in lines:
+            for line in blk.splitlines():
                 if line.startswith("CORRECT_NAME:"):
                     data["correct_name"] = line.replace("CORRECT_NAME:", "").strip()
                 elif line.startswith("ATTRACTIVE_SPECS:"):
@@ -118,10 +116,8 @@ Each block contains:
                 elif line.startswith("SOCIAL:"):
                     data["social"] = line.replace("SOCIAL:", "").strip()
                 elif line.startswith("#"):
-                    data["hashtags"] = line.strip() if "hashtags" not in data else data["hashtags"] + " " + line.strip()
-            
-            variants.append(data)  # ensure we append the full data dictionary
-        
+                    data["hashtags"] = line.strip()
+            variants.append(data)
         return variants
     except Exception as e:
         st.error(f"Groq error: {e}")
@@ -131,37 +127,27 @@ Each block contains:
 st.set_page_config(page_title="Phone Ad Cards – Tripple K", layout="wide")
 st.title("📱 Phone Ad Cards – Tripple K Communications")
 
-phone = st.text_input("Search phone / keywords", value="samsung a17 price kenya")
+phone = st.text_input("Search phone / keywords", value="Samsung A17 price Kenya")
 persona = st.selectbox("Buyer persona", ["Any", "Tech-savvy pros", "Budget students", "Camera creators", "Status execs"])
 tone = st.selectbox("Brand tone", ["Playful", "Luxury", "Rational", "FOMO"])
-
-# User choice for using SearxNG
 use_searxng = st.radio("Use SearxNG for additional search?", ["Yes", "No"], index=1)
 
 if st.button("Generate cards"):
     with st.spinner("Scraping + AI crafting…"):
-        # Use SearxNG to get additional data if selected
-        if use_searxng == "Yes":
-            raw = searx_raw(phone, pages=2)
-        else:
-            raw = []
+        raw = searx_raw(phone, pages=2) if use_searxng == "Yes" else []
 
-        # Call Groq to get information about the phone
         variants = ai_pack(phone, raw, persona if persona != "Any" else "Budget students", tone)
 
-        # Check if we have valid variants
         if variants and 'correct_name' in variants[0]:
             correct_name = variants[0]["correct_name"]
             st.header(correct_name)
 
-            # Fetch specs using the correct name
-            specs = gsm_specs(correct_name) 
+            specs = gsm_specs(correct_name)
             if specs:
                 st.subheader("🔍 Attractive Specs (Top 10)")
                 for line in specs:
                     st.markdown(f"- {line}")
 
-            # Display prices in a stylish table
             if "prices" in variants[0]:
                 st.subheader("💰 Price Spots")
                 price_data = []
@@ -173,17 +159,14 @@ if st.button("Generate cards"):
                     else:
                         st.warning("Invalid price format detected.")
                 
-                # Create and display the price table
                 if price_data:
                     price_df = pd.DataFrame(price_data)
-                    st.table(price_df)  # Use tables for better readability
+                    st.table(price_df)
 
-            # Generate and display flyer ideas
             if "banners" in variants[0]:
                 st.subheader("🖼️ Flyer Ideas")
                 st.write(variants[0]["banners"])
 
-            # Social media posts
             if "social" in variants[0]:
                 st.subheader("📲 Social Media Posts")
                 social_lines = variants[0]["social"].splitlines()
@@ -193,11 +176,9 @@ if st.button("Generate cards"):
                     st.markdown("**TikTok Post**")
                     st.text(social_lines[1])
 
-            # Hashtags
             if "hashtags" in variants[0]:
                 st.subheader("🏷️ Hashtags")
                 st.text(variants[0]["hashtags"])
-
         else:
             st.warning("No data returned from Groq. Please check the input.")
 else:
