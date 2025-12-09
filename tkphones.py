@@ -53,7 +53,7 @@ def phone_images(phone: str, qty=9) -> list[str]:
     return images[:qty]
 
 # ---------- GROQ ----------
-DEFAULT_MODEL = "llama3-70b-8192"
+DEFAULT_MODEL = "Llama-3.1-8b-instant"
 
 @st.cache_data(show_spinner=False)
 def correct_name(fuzzy: str) -> str:
