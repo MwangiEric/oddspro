@@ -1,26 +1,19 @@
-import streamlit as st
-import requests
-import time
-import urllib.parse
+#!/usr/bin/env python3
+import streamlit as st, requests, json, time, urllib.parse, re
 from groq import Groq
 from bs4 import BeautifulSoup
-import pandas as pd
 
-############################ CONFIG ################################
+############################  CONFIG  ################################
 GROQ_KEY = st.secrets.get("groq_key", "")
 if not GROQ_KEY:
-    st.error("Add groq_key to .streamlit/secrets.toml")
-    st.stop()
-
+    st.error("Add groq_key to .streamlit/secrets.toml"); st.stop()
 client = Groq(api_key=GROQ_KEY, timeout=30)
 SEARX_URL = "https://searxng-587s.onrender.com/search"
 RATE_LIMIT = 3
 LAST = 0
 MODEL = "llama-3.1-8b-instant"
-STORE_NAME = "Tripple K Communications"
-STORE_URL = "https://www.tripplek.co.ke"
-STORE_PHONE = "0715679912"
 #####################################################################
+
 
 # ---------- POLITE SEARX ----------
 def searx_raw(phone: str, pages: int = 2) -> list:
@@ -30,26 +23,16 @@ def searx_raw(phone: str, pages: int = 2) -> list:
         time.sleep(RATE_LIMIT - elapsed)
     LAST = time.time()
     out = []
-    for page in range(1, pages + 1):
-        try:
-            r = requests.get(
-                SEARX_URL,
-                params={
-                    "q": phone,
-                    "category_general": "1",
-                    "language": "auto",
-                    "safesearch": "0",
-                    "format": "json",
-                    "pageno": page
-                },
-                timeout=25,
-            )
-            r.raise_for_status()
-            out.extend(r.json().get("results", []))
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching search results: {e}")
-            return []
+    for p in range(1, pages + 1):
+        r = requests.get(
+            SEARX_URL,
+            params={"q": phone, "category_general": "1", "language": "auto",
+                    "safesearch": "0", "format": "json", "pageno": p},
+            timeout=25,
+        )
+        out.extend(r.json().get("results", []))
     return out
+
 
 # ---------- GSMARENA ----------
 def gsm_specs(phone: str) -> list[str]:
@@ -58,35 +41,48 @@ def gsm_specs(phone: str) -> list[str]:
         soup = BeautifulSoup(requests.get(search, timeout=15).text, "html.parser")
         link = soup.select_one("div.makers a")
         if not link:
-            st.warning("No device found on GSMArena.")
             return []
         device = urllib.parse.urljoin("https://www.gsmarena.com/", link["href"])
         soup2 = BeautifulSoup(requests.get(device, timeout=15).text, "html.parser")
         return [f"{tr.find_all('td')[0].get_text(strip=True)}: {tr.find_all('td')[1].get_text(strip=True)}"
-                for tr in soup2.select("table.specs tr") if len(tr.find_all("td")) == 2][:10]
-    except Exception as e:
-        st.error(f"Error fetching specifications: {e}")
+                for tr in soup2.select("table.specs tr") if len(tr.find_all("td")) == 2][:8]  # max 8 lines
+    except Exception:
         return []
 
-# ---------- AI PACK (plain text) ----------
+
+# ---------- AI AD PACK (plain text) ----------
 def ai_pack(phone: str, raw_json: list, persona: str, tone: str) -> list[dict]:
     hashtag_text = " ".join([r.get("title", "") + " " + r.get("content", "") for r in raw_json])
-    prompt = f"""Kenyan phone-marketing assistant for {STORE_NAME}.
+    prompt = f"""Kenyan phone-marketing assistant.
 Phone: {phone}
 Persona: {persona}
 Tone: {tone}
-Store: {STORE_NAME} | {STORE_URL} | {STORE_PHONE}
 Raw text: {hashtag_text}
 
 Return ONLY plain text (no JSON/objects) with exactly 3 blocks separated by "-----".
 
 Each block contains:
-1. "CORRECT_NAME:" official commercial name (max 4 words)
-2. "ATTRACTIVE_SPECS:" most appealing specs first (max 10 lines, one per line)
-3. "PRICES:" website - raw price - url (use real URLs from raw text)
-4. "BANNERS:" flyer ideas
-5. "SOCIAL:" ready-to-post texts (FB, TikTok) each on its own line
-6. "HASHTAGS:" 10 relevant hashtags, space-separated
+1. One spec per line (max 6 lines)
+2. "WEBSITES:" followed by 3 lines: "site - price - url" (use real URLs from raw text)
+3. "BANNERS:" 2 full poster lines
+4. "SOCIAL:" 3 ready-to-post texts (Tweet, IG, FB) each on its own line
+10 relevant hashtags at the end (space-separated)
+
+Example block layout:
+spec line 1
+spec line 2
+WEBSITES:
+jumia.co.ke - KSh 65,000 - https://...
+kilimall.co.ke - KSh 67,500 - https://...
+safaricom.co.ke - KSh 69,900 - https://...
+BANNERS:
+Line 1 poster text
+Line 2 poster text
+SOCIAL:
+Tweet text under 280 chars
+IG caption under 150 chars emoji OK
+FB post text under 300 chars
+#hashtag1 #hashtag2 ... #hashtag10
 -----
 <next block>
 -----
@@ -94,92 +90,72 @@ Each block contains:
 """
     try:
         out = client.chat.completions.create(
-            model=MODEL, 
-            messages=[{"role": "user", "content": prompt}],
+            model=MODEL, messages=[{"role": "user", "content": prompt}],
             temperature=0.4, timeout=30
         )
         raw = out.choices[0].message.content.strip()
         blocks = [b.strip() for b in raw.split("-----") if b.strip()]
         variants = []
-
-        for blk in blocks:
-            data = {}
-            for line in blk.splitlines():
-                if line.startswith("CORRECT_NAME:"):
-                    data["correct_name"] = line.replace("CORRECT_NAME:", "").strip()
-                elif line.startswith("ATTRACTIVE_SPECS:"):
-                    data["specs"] = line.replace("ATTRACTIVE_SPECS:", "").strip()
-                elif line.startswith("PRICES:"):
-                    data["prices"] = line.replace("PRICES:", "").strip()
-                elif line.startswith("BANNERS:"):
-                    data["banners"] = line.replace("BANNERS:", "").strip()
-                elif line.startswith("SOCIAL:"):
-                    data["social"] = line.replace("SOCIAL:", "").strip()
-                elif line.startswith("#"):
-                    data["hashtags"] = line.strip()
-            variants.append(data)
+        for blk in blocks[:3]:  # max 3
+            lines = [l.strip() for l in blk.splitlines() if l.strip()]
+            # quick parse
+            websites = [l.replace("WEBSITES:", "").strip() for l in lines if l.startswith("WEBSITES:")]
+            banners  = [l.replace("BANNERS:", "").strip() for l in lines if l.startswith("BANNERS:")]
+            social   = [l.replace("SOCIAL:", "").strip() for l in lines if l.startswith("SOCIAL:")]
+            hashtags = [l for l in lines if l.startswith("#")][0] if any(l.startswith("#") for l in lines) else "#phone"
+            variants.append({
+                "specs": "\n".join([l for l in lines if not l.startswith(("WEBSITES:", "BANNERS:", "SOCIAL:", "#"))]),
+                "websites": websites,
+                "banners": "\n".join(banners),
+                "social": "\n".join(social),
+                "hashtags": hashtags,
+            })
         return variants
     except Exception as e:
         st.error(f"Groq error: {e}")
         return []
 
-############################ UI ####################################
-st.set_page_config(page_title="Phone Ad Cards – Tripple K", layout="wide")
-st.title("📱 Phone Ad Cards – Tripple K Communications")
 
-phone = st.text_input("Search phone / keywords", value="Samsung A17 price Kenya")
+############################  UI  ####################################
+st.set_page_config(page_title="Phone Ad Cards", layout="wide")
+st.title("📱 Phone Ad Cards – Search → Specs → AI Copy")
+
+# ---------- SEARCH ----------
+phone = st.text_input("Search phone / keywords", value="samsung a17 price kenya")
 persona = st.selectbox("Buyer persona", ["Any", "Tech-savvy pros", "Budget students", "Camera creators", "Status execs"])
 tone = st.selectbox("Brand tone", ["Playful", "Luxury", "Rational", "FOMO"])
-use_searxng = st.radio("Use SearxNG for additional search?", ["Yes", "No"], index=1)
 
 if st.button("Generate cards"):
     with st.spinner("Scraping + AI crafting…"):
-        raw = searx_raw(phone, pages=2) if use_searxng == "Yes" else []
-
+        raw = searx_raw(phone, pages=2)
+        specs = gsm_specs(phone)
         variants = ai_pack(phone, raw, persona if persona != "Any" else "Budget students", tone)
 
-        if variants and 'correct_name' in variants[0]:
-            correct_name = variants[0]["correct_name"]
-            st.header(correct_name)
+    # ---------- GSMARENA CARD ----------
+    if specs:
+        with st.expander("🔍 GSMArena specs (one per line)"):
+            for line in specs:
+                st.markdown(f"- {line}")
 
-            specs = gsm_specs(correct_name)
-            if specs:
-                st.subheader("🔍 Attractive Specs (Top 10)")
-                for line in specs:
-                    st.markdown(f"- {line}")
-
-            if "prices" in variants[0]:
-                st.subheader("💰 Price Spots")
-                price_data = []
-                for line in variants[0]["prices"].split('\n'):
-                    parts = line.split(" - ")
-                    if len(parts) == 3:
-                        site, price, url = [p.strip() for p in parts]
-                        price_data.append({"Website": site, "Price": price, "URL": url})
-                    else:
-                        st.warning("Invalid price format detected.")
-                
-                if price_data:
-                    price_df = pd.DataFrame(price_data)
-                    st.table(price_df)
-
-            if "banners" in variants[0]:
-                st.subheader("🖼️ Flyer Ideas")
-                st.write(variants[0]["banners"])
-
-            if "social" in variants[0]:
-                st.subheader("📲 Social Media Posts")
-                social_lines = variants[0]["social"].splitlines()
-                if len(social_lines) >= 2:
-                    st.markdown("**Facebook Post**")
-                    st.text(social_lines[0])
-                    st.markdown("**TikTok Post**")
-                    st.text(social_lines[1])
-
-            if "hashtags" in variants[0]:
-                st.subheader("🏷️ Hashtags")
-                st.text(variants[0]["hashtags"])
-        else:
-            st.warning("No data returned from Groq. Please check the input.")
-else:
-    st.info("Fill fields and hit Generate cards.")
+    # ---------- AD VARIANT CARDS ----------
+    if variants:
+        st.subheader("AI Ad Variants (plain lists)")
+        for idx, v in enumerate(variants):
+            with st.container(border=True):
+                st.markdown(f"### Variant {idx+1}")
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    st.markdown("**Specs**")
+                    st.text(v["specs"])
+                    st.markdown("**Websites**")
+                    for w in v["websites"]:
+                        st.text(w)
+                    st.markdown("**Banner ideas**")
+                    st.text(v["banners"])
+                with c2:
+                    st.markdown("**Social pack**")
+                    st.text(v["social"])
+                    st.markdown("**Hashtags**")
+                    st.text(v["hashtags"])
+    else:
+        st.info("No AI variants returned – try again.")
