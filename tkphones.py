@@ -1,217 +1,199 @@
-# phone_finder.py
-import streamlit as st, requests, json, urllib.parse, time, random, bs4, re
-from groq import Groq
-from requests.exceptions import RequestException, Timeout, JSONDecodeError
+#!/usr/bin/env python3
+import streamlit as st, requests, pandas as pd, re, datetime as dt, json, time
+from typing import List
 
-# ---------- CONFIG ----------
-st.set_page_config(page_title="Phone Marketer Suite", layout="wide")
-if "groq_key" not in st.secrets:
-    st.error("Missing groq_key in .streamlit/secrets.toml"); st.stop()
-client = Groq(api_key=st.secrets["groq_key"])
+############################  CONFIG  ################################
+SEARX_URL = "https://searxng-587s.onrender.com"
+DEFAULT_QUERY = "samsung a17 price kenya"
+PAGES = 3
+RATE_LIMIT_SEC = 3
 
-SEARX   = "https://searxng-587s.onrender.com/search"
-TIMEOUT = 25
-RATE_LIMIT = 5
-LAST_SEARX = 0
-MODEL = "llama-3.1-8b-instant"   # ← new model
+# Regex helpers
+PRICE_RE = re.compile(r"(KES|KSh|Shs?)\s*([\d,]+\.?\d*)", re.I)
+WARRANTY_RE = re.compile(r"\b(WRTY?|warranty|12\s*months|24\s*months|36\s*months)\b", re.I)
+COLOR_RE = re.compile(r"\b(Black|White|Blue|Red|Green|Gold|Purple|Pink|Grey|Silver|Yellow|Orange|Brown)\b", re.I)
+OOS_RE = re.compile(r"\b(out of stock|sold out|unavailable|not available|0\s*left)\b", re.I)
 
-# ---------- UTILS ----------
-def rate_limit():
-    global LAST_SEARX
-    elapsed = time.time() - LAST_SEARX
-    if elapsed < RATE_LIMIT:
-        time.sleep(RATE_LIMIT - elapsed)
-    LAST_SEARX = time.time()
+# Top Kenyan shops
+SHOPS = {
+    "Any (no filter)": "",
+    "Jumia Kenya": "site:jumia.co.ke",
+    "Kilimall": "site:kilimall.co.ke",
+    "PhonePlace Kenya": "site:phoneplacekenya.co.ke",
+    "Masoko": "site:masoko.co.ke",
+    "Safaricom Shop": "site:safaricom.co.ke",
+}
+#####################################################################
 
-def ping_searx():
-    try:
-        requests.get(SEARX, params={"q": "ping", "format": "json"}, timeout=10)
-    except Exception:
-        pass
 
-# ---------- GSM ARENA ----------
 @st.cache_data(show_spinner=False)
-def gsmarena_specs(phone: str) -> dict:
-    try:
-        search_url = f"https://www.gsmarena.com/res.php3?sSearchWord={urllib.parse.quote(phone)}"
-        r = requests.get(search_url, timeout=TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        soup = bs4.BeautifulSoup(r.text, "html.parser")
-        link_tag = soup.select_one("div.makers a")
-        if not link_tag:
-            return {}
-        device_url = urllib.parse.urljoin("https://www.gsmarena.com/", link_tag["href"])
-        r2 = requests.get(device_url, timeout=TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
-        soup2 = bs4.BeautifulSoup(r2.text, "html.parser")
-        specs = {}
-        for tr in soup2.select("table.specs tr"):
-            td = tr.find_all("td")
-            if len(td) == 2:
-                specs[td[0].get_text(strip=True)] = td[1].get_text(strip=True)
-        return specs
-    except Exception:
-        return {}
-
-# ---------- DEVICE SPECS JSON ----------
-@st.cache_data(show_spinner=False)
-def devicespecs_json(phone: str) -> dict:
-    try:
-        search_url = f"https://www.devicespecifications.com/en/model-search/{urllib.parse.quote(phone)}"
-        soup = bs4.BeautifulSoup(requests.get(search_url, timeout=TIMEOUT).text, "html.parser")
-        link = soup.select_one("table.model-list a")
-        if not link:
-            return {}
-        slug = link["href"].split("/")[-1]
-        json_url = f"https://www.devicespecifications.com/en/model/{slug}?format=json"
-        return requests.get(json_url, timeout=TIMEOUT).json()
-    except Exception:
-        return {}
-
-# ---------- IMAGES ----------
-@st.cache_data(show_spinner=False)
-def phone_images(phone: str, qty=9) -> list[str]:
-    kw = phone.replace(" ", ",").lower()
-    images = [f"https://source.unsplash.com/600x400/?{kw},smartphone" for _ in range(qty)]
-    try:
-        pexels_q = phone.replace(" ", "-").lower()
-        url = f"https://www.pexels.com/search/{pexels_q}/"
-        soup = bs4.BeautifulSoup(requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10).text, "html.parser")
-        img_tag = soup.find("img", {"src": True})
-        if img_tag:
-            images[0] = img_tag["src"]
-    except Exception:
-        pass
-    random.shuffle(images)
-    return images[:qty]
-
-# ---------- GROQ ----------
-def correct_name(phone: str) -> str:
-    prompt = f'Correct the smartphone name to its official commercial title (max 4 words). Reply name only.\nInput: "{phone}"'
-    try:
-        out = client.chat.completions.create(
-            model=MODEL, messages=[{"role": "user", "content": prompt}],
-            temperature=0, timeout=TIMEOUT
+def pull_raw_results(query: str, time_range: str) -> List[dict]:
+    """Return raw SearXNG JSON results (all pages)."""
+    raw_all = []
+    for p in range(1, PAGES + 1):
+        # URL exactly as you showed
+        url = (
+            f"{SEARX_URL}/search?q={requests.utils.quote(query)}"
+            f"&category_general=1&pageno={p}&language=auto&time_range={time_range}"
+            f"&safesearch=0&format=json"
         )
-        return out.choices[0].message.content.strip()
-    except Exception:
-        return phone  # fallback
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        raw_all.extend(resp.json().get("results", []))
+    return raw_all
 
-def groq_pack(corrected: str, search_json: dict, persona: str, tone: str) -> list:
-    hashtag_text = " ".join([r.get("title", "") + " " + r.get("content", "") for r in search_json.get("results", [])])
-    prompt = f"""You are a social-media & marketing assistant.
-Phone: {corrected}
-Persona: {persona}
-Tone: {tone}
-Hashtag source text: {hashtag_text}
 
-Return ONLY valid JSON list with 3 variants. Each variant has:
-- specs: string (concise bullet specs, max 6 lines)
-- price_range: string (e.g. "Ksh 65,000 75,000)
-- site name from urls in json
-- urls: urls from json that lead to the site
-- tweet: string (max 280 chars)
-- ig_caption: string (max 150 chars, emoji allowed)
-- hashtags: string (10 hashtags extracted from the hashtag source text above, space-separated)
-- ad_copy: string (short headline for ad, max 8 words)
-- banner_ideas: string (2 short creative lines for a poster/banner)
-"""
-    try:
-        out = client.chat.completions.create(
-            model=MODEL, messages=[{"role": "user", "content": prompt}],
-            temperature=0.4, timeout=TIMEOUT
+def analyse(raw: List[dict]) -> pd.DataFrame:
+    """Extract price, warranty, colour, brand, OOS."""
+    rows = []
+    for item in raw:
+        title = item.get("title", "")
+        snippet = item.get("content", "")
+        text = title + " " + snippet
+
+        # Price
+        price_raw = PRICE_RE.search(text)
+        price = int(re.sub(r"[^\d]", "", price_raw.group(2))) if price_raw and price_raw.group(2).strip() else None
+
+        # Warranty
+        warranty = "Yes" if WARRANTY_RE.search(text) else "No"
+
+        # Colour
+        colour_match = COLOR_RE.search(text)
+        colour = colour_match.group(0) if colour_match else "Not specified"
+
+        # Brand
+        brand = (
+            re.search(r"\b(Samsung|Apple|iPhone|Xiaomi|Redmi|Oppo|Vivo|TECNO|Infinix|Huawei|Nokia)\b", text, re.I)
         )
-        return json.loads(out.choices[0].message.content.strip())
-    except Exception:
-        return [{}]
+        brand = brand.group(0).upper() if brand else "Other"
 
-# ---------- SEARX ----------
-def searx_json(query: str) -> dict:
-    rate_limit()
-    params = {"q": query, "category_general": "1", "language": "auto",
-              "safesearch": "0", "format": "json"}
-    try:
-        r = requests.get(SEARX, params=params, timeout=TIMEOUT)
-        r.raise_for_status()
-        return r.json()
-    except Timeout:
-        st.error("SearXNG timeout (cold-start). Retry in 20 s.")
-        return {"results": []}
-    except RequestException as e:
-        st.error(f"SearXNG error: {e}")
-        return {"results": []}
+        # OOS
+        oos = bool(OOS_RE.search(text))
 
-# ---------- UI ----------
-def main():
-    st.title("📱 Phone Marketer Suite (Kenya)")
+        rows.append(
+            {
+                "title": title,
+                "url": item["url"],
+                "snippet": snippet[:250],
+                "price_KES": price,
+                "warranty": warranty,
+                "colour": colour,
+                "brand": brand,
+                "oos": oos,
+                "published": item.get("publishedDate") or dt.datetime.utcnow().strftime("%Y-%m-%d"),
+            }
+        )
+    return pd.DataFrame(rows)
 
-    # default phone
-    if "phone_default" not in st.session_state:
-        st.session_state.phone_default = "Samsung s25 fe"
-    fuzzy = st.text_input("Phone name (fuzzy):", value=st.session_state.phone_default)
 
-    persona = st.selectbox("Buyer persona", ["Tech-savvy pros", "Budget students", "Camera creators", "Status execs"])
-    tone   = st.selectbox("Brand tone", ["Playful", "Luxury", "Rational", "FOMO"])
-    use_searx = st.checkbox("Use SearXNG (slow cold-start)", value=False)
+############################  UI  ####################################
+st.set_page_config(page_title="KE Phone Deals", layout="wide")
+st.title("📱 Kenya Phone Price Tracker – Raw → Full Table")
+st.info(f"SearXNG instance: {SEARX_URL}")
 
-    if st.button("Generate"):
-        corrected = correct_name(fuzzy)
-        # always scrape static sources
-        with st.spinner("Scraping GSMArena…"):
-            gsm = gsmarena_specs(corrected)
-        with st.spinner("Grabbing DeviceSpecifications JSON…"):
-            ds = devicespecs_json(corrected)
-        # SearXNG only if user opted-in
-        if use_searx:
-            with st.spinner("Warming SearXNG…"):
-                ping_searx()
-            with st.spinner("Searching specs & prices…"):
-                search_data = searx_json(f"{corrected} specs price Kenya")
-        else:
-            search_data = {"results": []}
-        with st.spinner("Creating 3 variants…"):
-            variants = groq_pack(corrected, search_data, persona, tone)
-        with st.spinner("Collecting images…"):
-            images = phone_images(corrected)
+# Sidebar
+with st.sidebar:
+    st.subheader("Search")
+    query = st.text_input("Query", value=DEFAULT_QUERY)
+    shop = st.selectbox("Shop filter", list(SHOPS.keys()))
+    time_range = st.selectbox("Recency", ["day", "week", "month"], index=1)
+    if st.button("🔄 Scan now"):
+        st.cache_data.clear()
 
-        # display
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            st.markdown("### Images")
-            if images:
-                st.image(images, width=180)
-            else:
-                st.info("No images")
+# Rate-limit guard
+if "last_call" not in st.session_state:
+    st.session_state.last_call = 0
+elapsed = time.time() - st.session_state.last_call
+if elapsed < RATE_LIMIT_SEC:
+    st.warning(f"Rate-limit active – wait {RATE_LIMIT_SEC - elapsed:.0f} s")
+    st.stop()
 
-        with col2:
-            st.markdown(f"### {corrected}")
-            if gsm:
-                with st.expander("🔍  GSMArena specs"):
-                    for k, v in list(gsm.items())[:10]:
-                        st.markdown(f"- **{k}**: {v}")
-            if ds:
-                with st.expander("🔍  DeviceSpecifications JSON"):
-                    st.json(ds)
-            if use_searx and search_data["results"]:
-                with st.expander("💰  Kenyan prices (SearXNG)"):
-                    for hit in search_data["results"][:5]:
-                        title = hit.get("title", "No title")
-                        url   = hit.get("url", "")
-                        site  = urllib.parse.urlparse(url).netloc or "Unknown"
-                        st.markdown(f"- **[{site}]({url})** – {title}")
+# Build final query
+site_filter = SHOPS[shop]
+final_query = f"{query} {site_filter}".strip()
 
-            # variants
-            for idx, v in enumerate(variants):
-                with st.expander(f"🎨  Variant {idx+1}  ({persona} · {tone})"):
-                    c1, c2, c3 = st.columns(3)
-                    c1.markdown("**Tweet**") ; c1.write(v.get("tweet", "n/a"))
-                    c2.markdown("**IG caption**") ; c2.write(v.get("ig_caption", "n/a"))
-                    c3.markdown("**Ad headline**") ; c3.write(v.get("ad_copy", "n/a"))
-                    st.markdown("**Hashtags:** " + v.get("hashtags", "#n/a"))
-                    st.markdown("**Banner ideas:** " + v.get("banner_ideas", "n/a"))
+# 1️⃣ PULL RAW -------------------------------------------------------
+with st.spinner("Pulling raw SearXNG ..."):
+    raw_results = pull_raw_results(final_query, time_range)
+    st.session_state.last_call = time.time()
 
-    else:
-        st.info("Fill fields and hit Generate.")
+st.success(f"Fetched {len(raw_results)} raw results for: `{final_query}`")
 
-# ---------- boot ----------
-if __name__ == "__main__":
-    main()
+with st.expander("👉 Inspect raw JSON (first 3 items)", expanded=False):
+    st.json(raw_results[:3])
+    st.download_button(
+        label="📥 Download full raw JSON",
+        data=json.dumps(raw_results, indent=2, ensure_ascii=False),
+        file_name=f"raw_phones_{dt.datetime.utcnow():%Y%m%d_%H%M}.json",
+        mime="application/json",
+    )
+
+# 2️⃣ ANALYSE --------------------------------------------------------
+if raw_results:
+    df = analyse(raw_results)
+    st.subheader(f"Full analysed table ({len(df)} rows)")
+
+    # Filters
+    with st.expander("🔍 Filters", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        min_price, max_price = c1.slider("Price (KES)", 5_000, 200_000, (5_000, 200_000))
+        brand_choice = c2.multiselect("Brands", sorted(df.brand.unique()), default=df.brand.unique())
+        colour_choice = c3.multiselect("Colour", sorted(df.colour.unique()), default=df.colour.unique())
+        warranty_choice = c4.multiselect("Warranty", sorted(df.warranty.unique()), default=df.warranty.unique())
+        oos_radio = st.radio("Stock", ["All", "In stock only", "Out of stock only"], index=0)
+
+    # Apply filters
+    df_filt = df.dropna(subset=["price_KES"])
+    df_filt = df_filt[(df_filt.price_KES >= min_price) & (df_filt.price_KES <= max_price)]
+    df_filt = df_filt[df_filt.brand.isin(brand_choice)]
+    df_filt = df_filt[df_filt.colour.isin(colour_choice)]
+    df_filt = df_filt[df_filt.warranty.isin(warranty_choice)]
+    if oos_radio == "In stock only":
+        df_filt = df_filt[~df_filt.oos]
+    elif oos_radio == "Out of stock only":
+        df_filt = df_filt[df_filt.oos]
+
+    # KPI
+    c1, c2, c3, c4, c5 = st.columns(5)
+    k1, k2, k3, k4, k5 = (
+        len(df_filt),
+        df_filt.price_KES.min() if len(df_filt) else "-",
+        df_filt.price_KES.median() if len(df_filt) else "-",
+        df_filt.oos.sum() if len(df_filt) else "-",
+        (df_filt.warranty == "Yes").sum() if len(df_filt) else "-",
+    )
+    c1.metric("Listings", k1)
+    c2.metric("Cheapest", f"KES {k2:,.0f}" if k2 != "-" else "-")
+    c3.metric("Median", f"KES {k3:,.0f}" if k3 != "-" else "-")
+    c4.metric("Out-of-stock", k4)
+    c5.metric("With warranty", k5)
+
+    # Full table
+    df_display = df_filt.copy()
+    df_display["📊"] = df_display.oos.apply(lambda x: "🟥" if x else "")
+    st.dataframe(
+        df_display[["📊", "title", "price_KES", "brand", "colour", "warranty", "url"]]
+        .sort_values("price_KES", na_position="last")
+        .reset_index(drop=True),
+        use_container_width=True,
+        column_config={
+            "title": st.column_config.TextColumn("Title", max_chars=120),
+            "price_KES": st.column_config.NumberColumn("Price (KES)", format="%d"),
+            "brand": st.column_config.TextColumn("Brand"),
+            "colour": st.column_config.TextColumn("Colour"),
+            "warranty": st.column_config.TextColumn("Warranty"),
+            "url": st.column_config.LinkColumn("URL"),
+        },
+    )
+
+    # RAM-only CSV export
+    csv = df_filt.to_csv(index=False)
+    st.download_button(
+        label="💾 CSV (in-memory)",
+        data=csv,
+        file_name=f"phones_{dt.datetime.utcnow():%Y%m%d_%H%M}.csv",
+        mime="text/csv",
+    )
+else:
+    st.warning("No results – try a different query or shop.")
