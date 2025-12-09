@@ -109,7 +109,7 @@ Each block contains:
 
 
 ############################  UI  ####################################
-st.set_page_config(page_config="Phone Ad Cards – Tripple K", layout="wide")
+st.set_page_config(page_title="Phone Ad Cards – Tripple K", layout="wide")
 st.title("📱 Phone Ad Cards – Tripple K Communications")
 
 phone = st.text_input("Search phone / keywords", value="samsung a17 price kenya")
