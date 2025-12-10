@@ -224,7 +224,7 @@ INSTRUCTIONS — Return EXACTLY these 6 sections, separated by:
    - NO LIMIT — list all verified prices.
 
 2. SPECS:
-   - Infer up to 6 key specs from web results.
+   - Infer up to 10 key specs from web results. Arrange them from most desirable
 
 3. INSIGHTS:
    - Selling Points, Tactics, Competitive Edge, Market Gap.
