@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TrippleK Phone-Ad Builder  –  Kenya-only, mobile-first, zero bloat
+TrippleK Phone-Ad Builder – Kenya-only, mobile-first, zero bloat
 pip install streamlit requests groq beautifulsoup4 tenacity pandas
 """
 
@@ -26,8 +26,8 @@ MODEL = "llama-3.1-8b-instant"
 
 # ---------- CONSTANTS ----------
 BRAND = {"primary": "#FF4F33", "dark": "#1E1E1E", "light": "#F9F9F9", "font": "Inter, sans-serif"}
-USER_BUCKETS: dict[str, float] = {}  # simple rate-limit bucket
-RATE_LIMIT = 1.2  # seconds between calls per user
+USER_BUCKETS: dict[str, float] = {}
+RATE_LIMIT = 1.2
 
 
 # ---------- UTILS ----------
@@ -40,7 +40,6 @@ def _wait(uid: str):
 
 
 def clean_query(q: str) -> str:
-    """remove kenya/.co.ke/price if user already wrote them"""
     stop = {"kenya", "ke", ".co.ke", "price"}
     words = re.split(r"\s+", q.strip())
     kept = [w for w in words if w.lower() not in stop]
@@ -51,10 +50,8 @@ def clean_query(q: str) -> str:
 @st.cache_data(ttl=3600, show_spinner=False)
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def searx_raw(raw_query: str) -> List[dict]:
-    """One-shot SearX → full JSON → keep only URLs with 'ke'"""
     uid = st.session_state.get("uid", "default")
     _wait(uid)
-
     q = f"({clean_query(raw_query)}) (kenya | .co.ke)"
     r = requests.get(
         SEARX_URL,
@@ -63,18 +60,16 @@ def searx_raw(raw_query: str) -> List[dict]:
     )
     r.raise_for_status()
     hits = r.json().get("results", [])
-
     slim = [
         {"title": h.get("title", ""), "url": h.get("url", ""), "content": h.get("content", "")}
         for h in hits
         if "ke" in h.get("url", "").lower()
     ]
-    return slim[:12]  # cap context
+    return slim[:12]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def gsm_specs(phone: str) -> List[str]:
-    """Top 10 GSMArena spec lines"""
     try:
         search = f"https://www.gsmarena.com/res.php3?sSearchWord={urllib.parse.quote(phone)}"
         soup = BeautifulSoup(requests.get(search, timeout=15).text, "html.parser")
@@ -98,7 +93,6 @@ def gsm_specs(phone: str) -> List[str]:
 
 # ---------- AI ----------
 def ai_pack(phone: str, kenya_json: List[dict], persona: str, tone: str) -> dict:
-    """Groq once → parse sections"""
     txt = " ".join((r.get("title") or "") + " " + (r.get("content") or "") for r in kenya_json)[:2500]
 
     prompt = f"""You are a Kenyan phone-marketing assistant for tripplek.co.ke.
@@ -139,18 +133,25 @@ FB: <3–4 Kenyan sentences, KSh price, spec hint, same-day Nairobi, soft urgenc
 
 TT:
 TT: <1–2 punchy lines, 5–8 hashtags>
+
+WA_BLAST:
+WA: <1-line WhatsApp hook + emoji + price + "Reply 1" CTA>
+
+MARKETING_STYLES:
+- Tone used by sites: (bullet list)
+- Urgency tactics: (bullet list)
+- CTA phrases: (bullet list)
 """
     try:
         resp = CLIENT.chat.completions.create(
             model=MODEL, messages=[{"role": "user", "content": prompt}],
-            temperature=0.35, max_tokens=900
+            temperature=0.35, max_tokens=1200
         )
         raw = resp.choices[0].message.content.strip()
     except Exception as e:
         st.error(f"Groq error: {e}")
         return {}
 
-    # lightweight parse
     def grab(section: str) -> List[str]:
         m = re.search(rf"^{section}:\s*(.*?)(?=^[A-Z_]+:|$)", raw, re.MULTILINE | re.DOTALL)
         if not m:
@@ -166,7 +167,9 @@ TT: <1–2 punchy lines, 5–8 hashtags>
         "flyer_ideas": grab("FLYER_IDEAS"),
         "flyer_text": grab("FLYER_TEXT"),
         "fb": raw.split("FB:")[1].split("TT:")[0].strip() if "FB:" in raw else "",
-        "tt": raw.split("TT:")[1].strip() if "TT:" in raw else "",
+        "tt": raw.split("TT:")[1].split("WA_BLAST:")[0].strip() if "TT:" in raw else "",
+        "wa_blast": raw.split("WA_BLAST:")[1].split("MARKETING_STYLES:")[0].strip() if "WA_BLAST:" in raw else "",
+        "marketing_styles": grab("MARKETING_STYLES"),
     }
 
 
@@ -257,6 +260,9 @@ if submitted:
     with col2:
         card("🎵 TikTok Caption", st.code(pack["tt"], language=None))
 
+    if pack.get("wa_blast"):
+        card("📲 WhatsApp Blast", st.code(pack["wa_blast"], language=None))
+
     # BANNER / FLYER AT BOTTOM
     if pack["banners"]:
         card("📰 Banner / Poster headlines", "".join(f"- {b}  \n" for b in pack["banners"]))
@@ -266,6 +272,9 @@ if submitted:
 
     if pack["flyer_text"]:
         card("📄 Flyer text variants", st.code("\n\n".join(pack["flyer_text"][:2]), language=None))
+
+    if pack.get("marketing_styles"):
+        card("📊 Marketing Styles Detected", "".join(f"- {m}  \n" for m in pack["marketing_styles"]))
 
     st.download_button(
         label="📥 Download full pack",
