@@ -157,10 +157,7 @@ banners = "".join([l.strip() for l in blocks[3].splitlines() if l.strip()])
                 if mode == "fb": fb_lines.append(line)
                 elif mode == "tt": tt_lines.append(line)
                 elif mode == "fl": fl_lines.append(line)
-            variants.append({"fb": "
-".join(fb_lines), "tt": "
-".join(tt_lines), "flyers": "
-".join(fl_lines)})
+            variants.append({"fb":"".join(fb_lines), "tt":"".join(tt_lines), "flyers": "".join(fl_lines)})
         
         return [{"clean_name": clean_name, "total_specs": total_specs, "prices": prices, "banners": banners, "variants": variants}]
     except Exception as e:
