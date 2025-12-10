@@ -114,9 +114,9 @@ FB: Samsung A17 now 25K! 🔥 #SamsungA17
 TT: 25K Samsung A17! Limited stock! #PhoneDeals
 FLYERS: 25K ONLY! / Same day delivery
 ///
-FB: ...
----
-FB: ...
+FB: Pro camera A17 25K!
+TT: A17 camera beast! #CameraPhone
+FLYERS: 50MP Pro Camera / 25K
 """
     try:
         out = client.chat.completions.create(
