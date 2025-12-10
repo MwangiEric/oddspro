@@ -197,9 +197,8 @@ st.markdown(
     div.stButton > button:hover{{background:#E63E2A;transform:translateY(-1px)}}
     .dataframe th{{background:{BRAND['primary']};color:white}}
     @media (max-width:768px){{.main-header{{padding:1rem}}.main-header h1{{font-size:1.6rem}}.card{{padding:1rem}}}}
-    </style>",
+    </style>""",
     unsafe_allow_html=True,
-"""
 )
 
 
