@@ -137,10 +137,10 @@ FLYERS: 50MP Pro Camera / 25K
                 clean_name = candidate
         
         # Block 1-4
-        total_specs = "
+total_specs = "
 ".join([l.strip() for l in blocks[1].splitlines() if l.strip()])
-        prices = [l.strip() for l in blocks[2].splitlines() if l.strip() and " - " in l]
-        banners = "
+prices = [l.strip() for l in blocks[2].splitlines() if l.strip() and " - " in l]
+banners = "
 ".join([l.strip() for l in blocks[3].splitlines() if l.strip()])
         
         variants_raw = [b.strip() for b in blocks[4].split("///") if b.strip()]
