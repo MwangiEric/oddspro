@@ -60,12 +60,14 @@ def searx_raw(raw_query: str) -> List[dict]:
     )
     r.raise_for_status()
     hits = r.json().get("results", [])
+
+    # KEEP ONLY URLs with "ke"
     slim = [
         {"title": h.get("title", ""), "url": h.get("url", ""), "content": h.get("content", "")}
         for h in hits
         if "ke" in h.get("url", "").lower()
     ]
-    return slim[:12]
+    return slim[:12]  # cap context
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -93,22 +95,31 @@ def gsm_specs(phone: str) -> List[str]:
 
 # ---------- AI ----------
 def ai_pack(phone: str, kenya_json: List[dict], persona: str, tone: str) -> dict:
-    txt = " ".join((r.get("title") or "") + " " + (r.get("content") or "") for r in kenya_json)[:2500]
+    # Numbered SERP table: position | title | url | content
+    serp_table = [
+        f"{idx+1} | TITLE: {r['title']} | URL: {r['url']} | CONTENT: {r['content'][:150]}"
+        for idx, r in enumerate(kenya_json)
+    ]
 
-    prompt = f"""You are a Kenyan phone-marketing assistant for tripplek.co.ke.
+    prompt = f"""You are a Kenyan marketing analyst & social-media manager for tripplek.co.ke.
 
 Phone: {phone}
 Persona: {persona}
-Tone: {tone}
-Kenya results: {txt}
+Tone: {tone}}
+
+Below is the **exact Kenyan SERP** we scraped (position | title | url | content).
+Use **only** URLs from this table — do **not** invent, shorten, or paraphrase URLs.
+Each row is related: the URL belongs to the title & content beside it.
+
+Kenyan SERP:
+{"\n".join(serp_table)}
 
 Return ONLY the exact block below (no chat):
 
 CLEAN_NAME: <exact model>
 
 PRICES:
-KSh XX,XXX - site.co.ke - https://...
-...
+KSh XX,XXX - site - <exact URL from SERP above>
 
 POST_TITLES:
 - FB 5–8 words
@@ -197,7 +208,7 @@ st.markdown(
     div.stButton > button:hover{{background:#E63E2A;transform:translateY(-1px)}}
     .dataframe th{{background:{BRAND['primary']};color:white}}
     @media (max-width:768px){{.main-header{{padding:1rem}}.main-header h1{{font-size:1.6rem}}.card{{padding:1rem}}}}
-    </style>""",
+    </style>",
     unsafe_allow_html=True,
 )
 
@@ -249,10 +260,12 @@ if submitted:
 
     if pack["prices"]:
         df = pd.DataFrame([p.split(" - ", 2) for p in pack["prices"]], columns=["Price", "Site", "URL"])
-        card("💰 Price Table", st.dataframe(df, use_container_width=True, hide_index=True))
+        card("💰 Price Table", st.dataframe(df, width='stretch', hide_index=True))
 
-    if pack["post_titles"]:
-        card("📝 Post titles", f"**Facebook:** {pack['post_titles'][0]}  \n**TikTok:** {pack['post_titles'][1]}")
+    titles = pack.get("post_titles") or []
+    fb_title = titles[0] if len(titles) > 0 else "—"
+    tt_title = titles[1] if len(titles) > 1 else "—"
+    card("📝 Post titles", f"**Facebook:** {fb_title}  \n**TikTok:** {tt_title}")
 
     col1, col2 = st.columns(2)
     with col1:
