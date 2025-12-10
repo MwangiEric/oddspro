@@ -1,53 +1,80 @@
 #!/usr/bin/env python3
-import streamlit as st, requests, time, urllib.parse
+"""
+TrippleK Phone-Ad Builder  –  Kenya-only, mobile-first, zero bloat
+pip install streamlit requests groq beautifulsoup4 tenacity pandas
+"""
+
+import os, json, re, time, urllib.parse, logging, streamlit as st, pandas as pd
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from typing import List
+
+import requests
 from groq import Groq
 from bs4 import BeautifulSoup
+from tenacity import retry, stop_after_attempt, wait_fixed
 
-############################  CONFIG  ################################
-GROQ_KEY = st.secrets.get("groq_key", "")
+# ---------- CONFIG ----------
+GROQ_KEY = st.secrets.get("groq_key") or os.getenv("GROQ_KEY")
 if not GROQ_KEY:
-    st.error("Add groq_key to .streamlit/secrets.toml")
+    st.error("🛑  Add groq_key to .streamlit/secrets.toml or env var GROQ_KEY")
     st.stop()
 
-client = Groq(api_key=GROQ_KEY, timeout=30)
+CLIENT = Groq(api_key=GROQ_KEY, timeout=30)
 SEARX_URL = "https://searxng-587s.onrender.com/search"
-RATE_LIMIT = 3
-LAST = 0
 MODEL = "llama-3.1-8b-instant"
-#####################################################################
+
+# ---------- CONSTANTS ----------
+BRAND = {"primary": "#FF4F33", "dark": "#1E1E1E", "light": "#F9F9F9", "font": "Inter, sans-serif"}
+USER_BUCKETS: dict[str, float] = {}  # simple rate-limit bucket
+RATE_LIMIT = 1.2  # seconds between calls per user
 
 
-# ---------- POLITE SEARX ----------
-def searx_raw(phone: str, pages: int = 2) -> list:
-    """Polite SearXNG wrapper with simple paging."""
-    global LAST
-    elapsed = time.time() - LAST
+# ---------- UTILS ----------
+def _wait(uid: str):
+    last = USER_BUCKETS.get(uid, 0)
+    elapsed = time.time() - last
     if elapsed < RATE_LIMIT:
         time.sleep(RATE_LIMIT - elapsed)
-    LAST = time.time()
-
-    out = []
-    for p in range(1, pages + 1):
-        r = requests.get(
-            SEARX_URL,
-            params={
-                "q": phone,
-                "category_general": "1",
-                "language": "auto",
-                "safesearch": "0",
-                "format": "json",
-                "pageno": p,
-            },
-            timeout=25,
-        )
-        r.raise_for_status()
-        out.extend(r.json().get("results", []))
-    return out
+    USER_BUCKETS[uid] = time.time()
 
 
-# ---------- GSMARENA ----------
-def gsm_specs(phone: str) -> list[str]:
-    """Grab up to 10 spec lines from GSMArena."""
+def clean_query(q: str) -> str:
+    """remove kenya/.co.ke/price if user already wrote them"""
+    stop = {"kenya", "ke", ".co.ke", "price"}
+    words = re.split(r"\s+", q.strip())
+    kept = [w for w in words if w.lower() not in stop]
+    return " ".join(kept)
+
+
+# ---------- API CALLS ----------
+@st.cache_data(ttl=3600, show_spinner=False)
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+def searx_raw(raw_query: str) -> List[dict]:
+    """One-shot SearX → full JSON → keep only URLs with 'ke'"""
+    uid = st.session_state.get("uid", "default")
+    _wait(uid)
+
+    q = f"({clean_query(raw_query)}) (kenya | .co.ke)"
+    r = requests.get(
+        SEARX_URL,
+        params={"q": q, "category_general": "1", "language": "auto", "safesearch": "0", "format": "json"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    hits = r.json().get("results", [])
+
+    slim = [
+        {"title": h.get("title", ""), "url": h.get("url", ""), "content": h.get("content", "")}
+        for h in hits
+        if "ke" in h.get("url", "").lower()
+    ]
+    return slim[:12]  # cap context
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def gsm_specs(phone: str) -> List[str]:
+    """Top 10 GSMArena spec lines"""
     try:
         search = f"https://www.gsmarena.com/res.php3?sSearchWord={urllib.parse.quote(phone)}"
         soup = BeautifulSoup(requests.get(search, timeout=15).text, "html.parser")
@@ -60,277 +87,189 @@ def gsm_specs(phone: str) -> list[str]:
         for tr in soup2.select("table.specs tr"):
             tds = tr.find_all("td")
             if len(tds) == 2:
-                key = tds[0].get_text(strip=True)
-                val = tds[1].get_text(strip=True)
-                specs.append(f"{key}: {val}")
+                specs.append(f"{tds[0].get_text(strip=True)}: {tds[1].get_text(strip=True)}")
                 if len(specs) >= 10:
                     break
         return specs
-    except Exception:
+    except Exception as e:
+        logging.warning("GSMArena fail: %s", e)
         return []
 
 
-# ---------- AI AD PACK ----------
-def ai_pack(phone: str, raw_json: list, persona: str, tone: str) -> dict:
-    """Use Groq to generate clean_name, prices, titles, banner/flyer ideas, FB + TT."""
-    hashtag_text = " ".join(
-        (r.get("title", "") or "") + " " + (r.get("content", "") or "") for r in raw_json
-    )
+# ---------- AI ----------
+def ai_pack(phone: str, kenya_json: List[dict], persona: str, tone: str) -> dict:
+    """Groq once → parse sections"""
+    txt = " ".join((r.get("title") or "") + " " + (r.get("content") or "") for r in kenya_json)[:2500]
 
-    prompt = f"""
-You are a Kenyan phone-marketing assistant for an online phone shop (tripplek.co.ke style).
+    prompt = f"""You are a Kenyan phone-marketing assistant for tripplek.co.ke.
 
 Phone: {phone}
 Persona: {persona}
 Tone: {tone}
-Raw text: {hashtag_text}
+Kenya results: {txt}
 
-Your task: Return ONLY ONE block following the EXACT structure below.
-No explanations, no emojis outside the content, no extra lines.
-Maintain this structure, labels, spacing, and order.
+Return ONLY the exact block below (no chat):
 
-------------------------------------------------------------
-CLEAN_NAME: <exact phone model, one clean line>
+CLEAN_NAME: <exact model>
 
 PRICES:
-# IMPORTANT: always follow this exact simple order → price, site, url
-KSh 25,000 - jumia.co.ke - https://jumia.co.ke/...
-KSh 24,500 - kilmall.co.ke - https://kilmall.co.ke/...
-KSh 27,999 - safaricom.co.ke - https://safaricom.co.ke/...
+KSh XX,XXX - site.co.ke - https://...
+...
 
 POST_TITLES:
-- Short title for FB post (5–8 words max)
-- Short title for TikTok caption (3–6 words)
+- FB 5–8 words
+- TT 3–6 words
 
 BANNERS:
-- Short headline idea for poster 1 (no prices, no long specs)
-- Short headline idea for poster 2
-- Short headline idea for flyer 1
-- Short headline idea for flyer 2
+- Head 1
+- Head 2
+- Head 3
+- Head 4
 
 FLYER_IDEAS:
-- Layout idea 1: Describe layout + 1–2 short benefit lines that appear on flyer
-- Layout idea 2: Describe layout + 1–2 short benefit lines that appear on flyer
+- Layout 1: desc + benefit
+- Layout 2: desc + benefit
 
 FLYER_TEXT:
-- A ready-to-use flyer text block (2–3 short lines, includes phone name, one simple spec hint, and soft CTA)
-- A second variant of flyer text (same rules)
+- Variant 1 (2–3 lines)
+- Variant 2 (2–3 lines)
 
 FB:
-Create a full Facebook post in smooth, natural Kenyan English.
-Rules:
-- 3–4 sentences only.
-- Mention the phone name and a realistic price or price range in KSh.
-- Use ONLY smart, simple spec hints (clean camera, big battery, smooth feel). No spec-sheet-style lists.
-- Include a light pain-point/solution angle (battery anxiety, blurry photos, slow phones).
-- Mention convenience: same-day delivery Nairobi + pay on delivery.
-- Use soft urgency (moving fast, limited restock).
-- End with 3–5 relevant hashtags.
-Start the line with exactly: FB:
+FB: <3–4 Kenyan sentences, KSh price, spec hint, same-day Nairobi, soft urgency, 3–5 hashtags>
 
 TT:
-Create a short, hype Kenyan TikTok caption.
-Rules:
-- 1–2 punchy lines only.
-- Light spec hints allowed, no full spec sheet.
-- Use polite urgency (grab yours now, don’t miss, moving fast).
-- Include 5–8 short, relevant hashtags.
-Start the line with exactly: TT:
-
-------------------------------------------------------------
-EXAMPLE (Do NOT copy values, only structure):
-
-CLEAN_NAME: Samsung Galaxy A17
-
-PRICES:
-KSh 25,000 - jumia.co.ke - https://jumia.co.ke/...
-KSh 24,500 - kilmall.co.ke - https://kilmall.co.ke/...
-KSh 27,999 - safaricom.co.ke - https://safaricom.co.ke/...
-
-POST_TITLES:
-- Fresh Upgrade for Everyday Use
-- A17 Deal Alert
-
-BANNERS:
-- Upgrade to a cleaner camera and all-day power.
-- Smooth feel, easy on your pocket.
-- Sharp photos for your everyday hustle.
-- Fresh upgrade, zero drama.
-
-FLYER_IDEAS:
-- Layout idea 1: Phone on right, bold title left, 1 benefit line below (clean camera / long battery), TrippleK logo bottom corner.
-- Layout idea 2: Centered phone, top headline, small detail line under it, CTA strip at bottom.
-
-FLYER_TEXT:
-- Samsung Galaxy A17 – clean camera, smooth feel. Order today, same-day delivery Nairobi.
-- A17 Upgrade – all-day battery and sharp photos. Grab yours now, pay on delivery.
-
-FB: Samsung Galaxy A17 now landing from around KSh 24K–27K for Kenyan buyers. Enjoy a clean camera, big battery and a smooth everyday feel without breaking your budget. Same-day delivery available in Nairobi and you can pay on delivery for peace of mind. Moving fast and restocks are limited, so lock yours in today. #SamsungA17 #PhoneDeals #KenyaTech #NairobiDelivery
-
-TT: A17 with big battery and clean camera ready for your daily hustle – from about 24K in Kenya. Grab yours now before the next restock disappears. #SamsungA17 #PhoneKenya #BudgetUpgrade #NairobiDeals #TikTokKenya #BigBattery
-
-------------------------------------------------------------
-
-Return exactly ONE block using the structure above and nothing else.
+TT: <1–2 punchy lines, 5–8 hashtags>
 """
-
     try:
-        resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            timeout=30,
+        resp = CLIENT.chat.completions.create(
+            model=MODEL, messages=[{"role": "user", "content": prompt}],
+            temperature=0.35, max_tokens=900
         )
         raw = resp.choices[0].message.content.strip()
-        lines = [l.strip() for l in raw.splitlines() if l.strip()]
-
-        clean_name = phone
-        prices: list[str] = []
-        post_titles: list[str] = []
-        banners: list[str] = []
-        flyer_ideas: list[str] = []
-        flyer_text: list[str] = []
-        fb = ""
-        tt = ""
-
-        section = None
-        for line in lines:
-            # section headers
-            if line.startswith("CLEAN_NAME:"):
-                clean_name = line.split(":", 1)[1].strip()
-                section = None
-                continue
-            if line.startswith("PRICES:"):
-                section = "prices"
-                continue
-            if line.startswith("POST_TITLES:"):
-                section = "post_titles"
-                continue
-            if line.startswith("BANNERS:"):
-                section = "banners"
-                continue
-            if line.startswith("FLYER_IDEAS:"):
-                section = "flyer_ideas"
-                continue
-            if line.startswith("FLYER_TEXT:"):
-                section = "flyer_text"
-                continue
-            if line.startswith("FB:"):
-                fb = line[3:].strip()
-                section = None
-                continue
-            if line.startswith("TT:"):
-                tt = line[3:].strip()
-                section = None
-                continue
-
-            # content lines
-            if section == "prices":
-                if line.startswith("#"):
-                    continue
-                if " - " in line:
-                    prices.append(line)
-            elif section == "post_titles" and line.startswith("- "):
-                post_titles.append(line[2:].strip())
-            elif section == "banners" and line.startswith("- "):
-                banners.append(line[2:].strip())
-            elif section == "flyer_ideas" and line.startswith("- "):
-                flyer_ideas.append(line[2:].strip())
-            elif section == "flyer_text" and line.startswith("- "):
-                flyer_text.append(line[2:].strip())
-
-        return {
-            "clean_name": clean_name,
-            "prices": prices,
-            "post_titles": post_titles,
-            "banners": banners,
-            "flyer_ideas": flyer_ideas,
-            "flyer_text": flyer_text,
-            "fb": fb,
-            "tt": tt,
-        }
     except Exception as e:
         st.error(f"Groq error: {e}")
         return {}
 
+    # lightweight parse
+    def grab(section: str) -> List[str]:
+        m = re.search(rf"^{section}:\s*(.*?)(?=^[A-Z_]+:|$)", raw, re.MULTILINE | re.DOTALL)
+        if not m:
+            return []
+        return [ln[2:].strip() for ln in m.group(1).splitlines() if ln.startswith("- ")]
 
-############################  UI  ####################################
-st.set_page_config(page_title="Phone Ad Cards – TrippleK Style", layout="wide")
-st.title("📱 Phone Ad & Flyer Builder")
+    prices = [ln for ln in raw.splitlines() if ln.startswith("KSh ") and " - " in ln]
+    return {
+        "clean_name": raw.splitlines()[0].replace("CLEAN_NAME:", "").strip(),
+        "prices": prices,
+        "post_titles": grab("POST_TITLES"),
+        "banners": grab("BANNERS"),
+        "flyer_ideas": grab("FLYER_IDEAS"),
+        "flyer_text": grab("FLYER_TEXT"),
+        "fb": raw.split("FB:")[1].split("TT:")[0].strip() if "FB:" in raw else "",
+        "tt": raw.split("TT:")[1].strip() if "TT:" in raw else "",
+    }
 
-phone = st.text_input("Search phone / keywords", value="samsung a17 price kenya")
-persona = st.selectbox(
-    "Buyer persona",
-    ["Budget students", "Tech-savvy pros", "Camera creators", "Status execs"],
+
+# ---------- UI ----------
+st.set_page_config(
+    page_title="TrippleK Ad Builder",
+    page_icon="📱",
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
-tone = st.selectbox("Brand tone", ["Playful", "Luxury", "Rational", "FOMO"])
 
-if st.button("Generate pack"):
-    with st.spinner("Scraping + crafting copy…"):
-        raw_results = searx_raw(phone, pages=2)
-        specs = gsm_specs(phone)
+if "uid" not in st.session_state:
+    st.session_state.uid = datetime.now().isoformat()
+
+st.markdown(
+    f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+    html,body,[class*="css"]{{font-family:{BRAND['font']};background:{BRAND['light']};color:{BRAND['dark']}}}
+    .main-header{{background:linear-gradient(90deg,{BRAND['primary']} 0%,#FF6A52 100%);padding:1.2rem 2rem;border-radius:12px;color:white;margin-bottom:2rem}}
+    .main-header h1{{margin:0;font-weight:700;font-size:2rem}}
+    .main-header p{{margin:0;opacity:.9}}
+    .card{{background:white;border-radius:12px;padding:1.5rem;box-shadow:0 2px 6px rgba(0,0,0,.06);margin-bottom:1.5rem}}
+    div.stButton > button{{background:{BRAND['primary']};color:white;border:none;border-radius:8px;padding:.5rem 1.8rem;font-weight:600;transition:.2s}}
+    div.stButton > button:hover{{background:#E63E2A;transform:translateY(-1px)}}
+    .dataframe th{{background:{BRAND['primary']};color:white}}
+    @media (max-width:768px){{.main-header{{padding:1rem}}.main-header h1{{font-size:1.6rem}}.card{{padding:1rem}}}}
+    </style>",
+    unsafe_allow_html=True,
+)
+
+
+def card(title, body):
+    st.markdown(f'<div class="card"><h3>{title}</h3>{body}</div>', unsafe_allow_html=True)
+
+
+st.markdown(
+    '<div class="main-header"><h1>📱 TrippleK Ad & Flyer Builder</h1>'
+    "<p>Generate ready-to-post Kenyan phone ads in seconds</p></div>",
+    unsafe_allow_html=True,
+)
+
+with st.form("inputs"):
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        phone = st.text_input("Search phone / keywords", value="samsung a17")
+    with c2:
+        st.write("")
+        submitted = st.form_submit_button("Build pack", use_container_width=True)
+    c3, c4 = st.columns(2)
+    with c3:
+        persona = st.selectbox(
+            "Buyer persona",
+            ["Budget students", "Tech-savvy pros", "Camera creators", "Status execs"],
+        )
+    with c4:
+        tone = st.selectbox("Brand tone", ["Playful", "Luxury", "Rational", "FOMO"])
+
+if submitted:
+    with st.spinner("Crafting Kenya-ready pack…"):
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_searx = ex.submit(searx_raw, phone)
+            fut_specs = ex.submit(gsm_specs, phone)
+        raw_results = fut_searx.result()
+        specs = fut_specs.result()
         pack = ai_pack(phone, raw_results, persona, tone)
 
     if not pack:
-        st.info("No AI pack returned – try again.")
-    else:
-        clean_name = pack.get("clean_name") or phone
-        st.header(clean_name)
+        st.info("No pack returned – try different keywords.")
+        st.stop()
 
-        # SPECS (for poster, not repeated in social)
-        if specs:
-            st.subheader("🔍 Specs (for poster only)")
-            for line in specs:
-                st.markdown(f"- {line}")
+    card("🔍 " + pack["clean_name"], "")
+    if specs:
+        with st.expander("Specs for poster"):
+            for l in specs:
+                st.markdown("- " + l)
 
-        # PRICES TABLE (price, site, url)
-        prices = pack.get("prices") or []
-        if prices:
-            st.subheader("💰 Price Table (price, site, url)")
-            st.markdown("| Price | Site | URL |")
-            st.markdown("|-------|------|-----|")
-            for line in prices:
-                parts = line.split(" - ")
-                if len(parts) == 3:
-                    price_val, site, url = [p.strip() for p in parts]
-                    st.markdown(f"| {price_val} | {site} | [{url}]({url}) |")
+    if pack["prices"]:
+        df = pd.DataFrame([p.split(" - ", 2) for p in pack["prices"]], columns=["Price", "Site", "URL"])
+        card("💰 Price Table", st.dataframe(df, use_container_width=True, hide_index=True))
 
-        # POST TITLES
-        post_titles = pack.get("post_titles") or []
-        if post_titles:
-            st.subheader("📝 Post titles")
-            if len(post_titles) > 0:
-                st.markdown(f"- **FB title:** {post_titles[0]}")
-            if len(post_titles) > 1:
-                st.markdown(f"- **TT title:** {post_titles[1]}")
+    if pack["post_titles"]:
+        card("📝 Post titles", f"**Facebook:** {pack['post_titles'][0]}  \n**TikTok:** {pack['post_titles'][1]}")
 
-        # BANNERS
-        banners = pack.get("banners") or []
-        if banners:
-            st.subheader("📰 Banner / Poster headlines")
-            for b in banners:
-                st.markdown(f"- {b}")
+    col1, col2 = st.columns(2)
+    with col1:
+        card("📘 Facebook Post", st.code(pack["fb"], language=None))
+    with col2:
+        card("🎵 TikTok Caption", st.code(pack["tt"], language=None))
 
-        # FLYER IDEAS
-        flyer_ideas = pack.get("flyer_ideas") or []
-        if flyer_ideas:
-            st.subheader("📐 Flyer layout ideas")
-            for idea in flyer_ideas:
-                st.markdown(f"- {idea}")
+    # BANNER / FLYER AT BOTTOM
+    if pack["banners"]:
+        card("📰 Banner / Poster headlines", "".join(f"- {b}  \n" for b in pack["banners"]))
 
-        # FLYER TEXT
-        flyer_text = pack.get("flyer_text") or []
-        if flyer_text:
-            st.subheader("📄 Flyer text variants")
-            for i, txt in enumerate(flyer_text[:2], start=1):
-                st.markdown(f"**Flyer text {i}:**")
-                st.code(txt, language=None)
+    if pack["flyer_ideas"]:
+        card("📐 Flyer layout ideas", "".join(f"- {i}  \n" for i in pack["flyer_ideas"]))
 
-        # FULL SOCIAL COPY
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("### 📘 Facebook Post")
-            st.code(pack.get("fb", ""), language=None)
-        with col2:
-            st.markdown("### 🎵 TikTok Caption")
-            st.code(pack.get("tt", ""), language=None)
+    if pack["flyer_text"]:
+        card("📄 Flyer text variants", st.code("\n\n".join(pack["flyer_text"][:2]), language=None))
+
+    st.download_button(
+        label="📥 Download full pack",
+        data=json.dumps(pack, indent=2, ensure_ascii=False),
+        file_name=f"{pack['clean_name'].replace(' ','_')}_pack.txt",
+        mime="text/plain",
+    )
