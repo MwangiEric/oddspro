@@ -118,6 +118,7 @@ FB: Pro camera A17 25K!
 TT: A17 camera beast! #CameraPhone
 FLYERS: 50MP Pro Camera / 25K
 """
+"
     try:
         out = client.chat.completions.create(
             model=MODEL, messages=[{"role": "user", "content": prompt}],
