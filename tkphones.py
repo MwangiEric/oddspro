@@ -15,7 +15,7 @@ if not GROQ_KEY:
 
 from groq import Groq
 client = Groq(api_key=GROQ_KEY)
-SEARX_URL = "https://searxng-587s.onrender.com/search".strip()  # Fixed trailing space
+SEARX_URL = "https://searxng-587s.onrender.com/search"
 MODEL = "llama-3.1-8b-instant"
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
 LAST_CALL = 0
@@ -26,10 +26,25 @@ BRAND_GREEN = "#4CAF50"
 BRAND_MAROON = "#8B0000"
 BACKGROUND_LIGHT = "#F9FAF8"
 DEFAULT_TONE = "Playful"
-
-# Tripple K contact
 TRIPPLEK_PHONE = "+254700123456"
+
+# Seasonal hook
+now = datetime.now()
+is_christmas_season = (now.month == 12 and now.day >= 1) or (now.month == 1 and now.day <= 10)
+CHRISTMAS_HOOK = "🎄 Christmas Special! Perfect gift with fast delivery & warranty." if is_christmas_season else ""
 ####################################################################
+
+
+# --- WAKE UP SEARX ON START ---
+@st.cache_resource
+def warm_up_searx():
+    try:
+        requests.get(SEARX_URL, params={"q": "test", "format": "json"}, timeout=10)
+    except:
+        pass  # Silent fail — not critical
+
+
+warm_up_searx()  # Runs once on app load
 
 
 def inject_brand_css():
@@ -60,7 +75,6 @@ def inject_brand_css():
     footer {{
         visibility: hidden;
     }}
-    /* Mobile responsiveness */
     @media (max-width: 768px) {{
         .stTextArea > div > div > textarea,
         .stCodeBlock {{
@@ -73,9 +87,6 @@ def inject_brand_css():
             width: 100% !important;
             margin-bottom: 1rem;
         }}
-        h2 {{
-            font-size: 1.8rem;
-        }}
     }}
     </style>
     """, unsafe_allow_html=True)
@@ -86,57 +97,7 @@ def extract_retailer_simple(url: str) -> str:
         return "unknown"
     domain = urlparse(url).netloc.lower()
     domain = re.sub(r"^(www|m|mobile|shop)\.", "", domain)
-    # Extract main part before TLD (e.g., jumia from jumia.co.ke)
-    parts = domain.split(".")
-    return parts[0] if parts else "unknown"
-
-
-def is_tripplek_url(url: str) -> bool:
-    return "tripplek.co.ke" in url.lower()
-
-
-def extract_slug_from_url(url: str) -> str:
-    clean = url.split("?", 1)[0].split("#", 1)[0]
-    parts = [p for p in clean.split("/") if p]
-    return parts[-1].lower() if parts else ""
-
-
-def predict_image_url_with_groq(phone: str, url: str) -> str:
-    slug = extract_slug_from_url(url)
-    prompt = f"""You are an e-commerce expert.
-
-Phone: {phone}
-Product page: {url}
-Slug: {slug}
-
-Kenyan sites often use WooCommerce. Likely image paths:
-/wp-content/uploads/YYYY/MM/{slug}.jpg
-/wp-content/uploads/YYYY/MM/{slug}-1024x1024.jpg
-
-Return ONLY a full, valid image URL or "unknown".
-"""
-    try:
-        comp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=120,
-            timeout=8,
-        )
-        pred = comp.choices[0].message.content.strip()
-        if pred != "unknown" and pred.startswith("http"):
-            return pred
-    except:
-        pass
-    return ""
-
-
-def is_image_valid(img_url: str) -> bool:
-    try:
-        r = requests.head(img_url, timeout=3, headers=HEADERS)
-        return r.status_code == 200 and "image" in r.headers.get("content-type", "").lower()
-    except:
-        return False
+    return domain.split(".")[0]
 
 
 def searx_all_results(phone: str) -> list[dict]:
@@ -166,7 +127,7 @@ def searx_all_results(phone: str) -> list[dict]:
                 full_text = f"{title} {content} {url}".lower()
 
                 price_match = re.search(
-                    r'(?:ksh?|kes|shillings?)\s*[:\-]?\s*(\d{3,}(?:,\d{3})*)(?!\s*(?:gb|mb|gbp|usd|eur))',
+                    r'(?:ksh?|kes|shillings?)\s*[:\-]?\s*(\d{{3,}}(?:,\d{{3}})*)(?!\s*(?:gb|mb|gbp|usd|eur))',
                     full_text,
                     re.IGNORECASE
                 )
@@ -192,7 +153,7 @@ def searx_all_results(phone: str) -> list[dict]:
                 st.warning(f"⚠️ Server is starting... (attempt {attempt}/{max_retries}). Retrying in {retry_wait}s.")
                 time.sleep(retry_wait)
             else:
-                st.error("❌ SearXNG failed after 3 attempts. Falling back to AI-only mode.")
+                st.error("❌ SearXNG failed after 3 attempts. No live data available.")
                 return []
     return []
 
@@ -227,34 +188,38 @@ def parse_groq_response(raw: str):
 def generate_marketing_with_data(phone: str, web_context: str, persona: str, tone: str) -> tuple:
     prompt = f"""You are the official marketing AI for **Tripple K Communications** (www.tripplek.co.ke).
 
-BRAND:
-- CTA: "Shop now at Tripple K Communications" or "Visit tripplek.co.ke"
-- Default tone: Playful
+TRIPLE K VALUE PROPS (ALWAYS MENTION 1–2):
+- Accredited distributor of original brands
+- Full manufacturer warranty
+- Pay on delivery available
+- Fast Nairobi delivery
+
+{"🎄 CHRISTMAS SEASON HOOK: Great gift with warranty & fast delivery!" if is_christmas_season else ""}
 
 INPUT:
 PHONE: {phone}
-TARGET PERSONA: {persona}
+PERSONA: {persona}
 TONE: {tone}
-WEB CONTEXT (real snippets):
+DATA:
 {web_context}
 
-RETURN EXACTLY these 4 sections:
+RETURN EXACTLY:
 ---PRICE---
 ---SPECS---
 ---INSIGHTS---
 ---COPY---
 
-1. PRICE: "Retailer - KSh X,XXX - URL" for each priced result.
+1. PRICE: "Retailer - KSh X,XXX - URL" only from data.
 
-2. SPECS: Up to 10 specs from context.
+2. SPECS: Up to 10 real specs.
 
-3. INSIGHTS: Real trends from snippets. Short lines.
+3. INSIGHTS: Short lines. No competitor names. Focus on Tripple K trust.
 
 4. COPY:
-   - BANNERS: 2 lines (≤40 chars)
-   - TIKTOK: <100 chars
-   - IG / FB: benefit-driven
-   - WHATSAPP: Include phone number: {TRIPPLEK_PHONE}
+   - BANNERS: ≤40 chars
+   - TIKTOK: <100 chars, fun, use emojis if Playful
+   - IG/FB: Benefit-driven
+   - WHATSAPP: Include phone {TRIPPLEK_PHONE}, warranty, pay on delivery
    - HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE
 
 Plain text only.
@@ -273,50 +238,12 @@ Plain text only.
         return "", "", "", ""
 
 
-def generate_marketing_without_data(phone: str, persona: str, tone: str) -> tuple:
-    prompt = f"""You are a marketing expert for **Tripple K Communications** in Kenya.
-
-Create realistic, helpful content for:
-PHONE: {phone}
-PERSONA: {persona}
-TONE: {tone}
-
-DO NOT invent prices, retailers, or fake specs.
-Focus on general benefits, brand trust, and call-to-action.
-
-RETURN ONLY this section:
----COPY---
-
-- BANNERS: 2 lines (≤40 chars)
-- TIKTOK: 1 line <100 chars
-- IG / FB: short posts
-- WHATSAPP: include phone {TRIPPLEK_PHONE}
-- HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE
-
-Plain text only.
-"""
-    try:
-        comp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            timeout=30,
-            max_tokens=800,
-        )
-        raw = comp.choices[0].message.content.strip()
-        # Fake empty blocks for price/specs/insights
-        return ("", "", "", raw)
-    except Exception as e:
-        st.error(f"🤖 Groq fallback error: {e}")
-        return "", "", "", ""
-
-
 ############################ STREAMLIT UI ####################################
 inject_brand_css()
 st.title("📱 Tripple K Phone Ad Generator")
-st.caption("Flyer-Ready Marketing Kits for Tripple K Communications | www.tripplek.co.ke")
+st.caption("Flyer-Ready Marketing Kits | www.tripplek.co.ke")
 
-phone = st.text_input("🔍 Phone model (e.g., Tecno Spark 20)", value="Xiaomi Poco X6 Pro")
+phone = st.text_input("🔍 Phone model (e.g., Xiaomi Poco X6 Pro)", value="Xiaomi Poco X6 Pro")
 persona = st.selectbox("👤 Buyer Persona", 
                       ["All Kenyan buyers", "Budget students", "Tech-savvy pros", "Camera creators", "Status execs"], 
                       index=0)
@@ -327,55 +254,30 @@ tone = st.selectbox("🎨 Brand Tone",
 if st.button("🚀 Generate Tripple K Marketing Kit", type="primary"):
     fetch_date = datetime.now().strftime("%d %b %Y at %H:%M EAT")
 
-    with st.status("🔍 Generating Tripple K Ad Kit...", expanded=True) as status:
-        st.write("🌐 Fetching Kenyan offers...")
+    with st.status("🔍 Fetching live Kenyan market data...", expanded=True) as status:
+        st.write("🌐 Waking up SearXNG and fetching offers...")
         web_results = searx_all_results(phone)
         searx_success = len(web_results) > 0
 
         if searx_success:
             web_context = build_groq_context(web_results)
-            st.write("🧠 Creating data-driven copy...")
+            st.write("🧠 Generating data-backed marketing kit...")
             price_block, specs_block, insights_block, copy_block = generate_marketing_with_data(
                 phone, web_context, persona, tone
             )
-            # Generate price summary
-            from collections import defaultdict
-            prices = []
-            for r in web_results:
-                if r.get("price_ksh"):
-                    clean = re.sub(r"[^\d]", "", r["price_ksh"])
-                    if clean.isdigit():
-                        prices.append(int(clean))
-            if prices:
-                min_p, max_p, avg_p = min(prices), max(prices), round(sum(prices)/len(prices))
-                oos = sum(1 for r in web_results if "Out of stock" in r.get("stock", ""))
-                stock_note = "Most in stock." if oos == 0 else "Some out of stock."
-                insights_summary = f"Kenyan prices for the {phone} range from KSh {min_p:,} to KSh {max_p:,}. {stock_note}"
-                price_recommendation = f"**Recommended Price: KSh {max_p - 500:,}**"
-                price_stats = {"min": min_p, "max": max_p, "avg": avg_p, "rec": max_p - 500}
-            else:
-                insights_summary = f"No pricing data found for {phone}."
-                price_recommendation = ""
-                price_stats = {}
         else:
-            st.write("🧠 Creating AI-only copy (no live data)...")
-            price_block, specs_block, insights_block, copy_block = generate_marketing_without_data(phone, persona, tone)
-            insights_summary = f"⚠️ No live market data. AI-generated suggestions only."
-            price_recommendation = ""
-            price_stats = {}
+            st.write("⚠️ No live data. Showing phone name only.")
+            price_block = specs_block = insights_block = ""
+            copy_block = ""
 
-        status.update(label="✅ Tripple K Kit Ready!", state="complete", expanded=False)
+        status.update(label="✅ Done!", state="complete", expanded=False)
 
-    # ------- PHONE NAME + SUMMARY -------
+    # ------- PHONE NAME -------
     st.markdown(f"## {phone}")
-    st.markdown(insights_summary)
-    if price_recommendation:
-        with st.expander("💰 Price Strategy"):
-            st.markdown(price_recommendation)
-            if price_stats:
-                st.markdown(f"📊 **Range**: KSh {price_stats['min']:,} – KSh {price_stats['max']:,} | **Avg**: KSh {price_stats['avg']:,}")
+    if CHRISTMAS_HOOK:
+        st.info(CHRISTMAS_HOOK)
 
-    # ------- PRICE TABLE (only if data exists) -------
+    # ------- PRICE TABLE (ONLY IF DATA) -------
     if searx_success and price_block.strip():
         st.subheader("🛒 Verified Kenyan Prices")
         price_lines = [line.strip() for line in price_block.splitlines() if line.strip()]
@@ -393,90 +295,67 @@ if st.button("🚀 Generate Tripple K Marketing Kit", type="primary"):
                     "Stock": stock,
                     "Link": url
                 })
-        # Sort by numeric price (high to low)
         def extract_price(row):
             clean = re.sub(r"[^\d]", "", row["Price (KSh)"])
             return int(clean) if clean.isdigit() else 0
         rows.sort(key=extract_price, reverse=True)
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
-    elif not searx_success:
-        st.caption("⚠️ No pricing data — SearXNG unavailable.")
 
-    # ------- SPECS -------
-    if specs_block and searx_success:
-        st.sub00bheader("📱 Key Specs")
+    # ------- SPECS (ONLY IF DATA) -------
+    if searx_success and specs_block.strip():
+        st.subheader("📱 Key Specs")
         st.text(specs_block)
 
-    # ------- INSIGHTS -------
-    if insights_block and searx_success:
-        with st.expander("📈 Strategic Market Insights"):
+    # ------- INSIGHTS (ONLY IF DATA) -------
+    if searx_success and insights_block.strip():
+        with st.expander("📈 Market Insights"):
             for line in insights_block.splitlines():
                 if line.strip():
                     st.markdown(f"- {line.strip()}")
 
-    # ------- COPY -------
-    st.subheader("📣 Ready-to-Use Copy")
-    lines = [l.strip() for l in copy_block.splitlines() if l.strip()]
-    banners = []
-    social = {"TikTok": "", "IG": "", "FB": "", "WhatsApp": ""}
-    hashtags = ""
+    # ------- COPY (ALWAYS SHOW IF GENERATED) -------
+    if copy_block.strip():
+        st.subheader("📣 Ready-to-Use Copy")
+        lines = [l.strip() for l in copy_block.splitlines() if l.strip()]
+        banners = []
+        social = {"TikTok": "", "IG": "", "FB": "", "WhatsApp": ""}
+        hashtags = ""
 
-    current = None
-    for line in lines:
-        if line.startswith("BANNERS:"):
-            current = "banner"
-        elif line.startswith("TikTok:"):
-            social["TikTok"] = line.replace("TikTok:", "").strip()
-            current = "tiktok"
-        elif line.startswith("IG:"):
-            social["IG"] = line.replace("IG:", "").strip()
-            current = "ig"
-        elif line.startswith("FB:"):
-            social["FB"] = line.replace("FB:", "").strip()
-            current = "fb"
-        elif line.startswith("WHATSAPP:"):
-            social["WhatsApp"] = line.replace("WHATSAPP:", "").strip()
-            current = "whatsapp"
-        elif line.startswith("#"):
-            hashtags = line
-            break
-        elif current == "banner" and len(banners) < 2:
-            banners.append(line)
+        current = None
+        for line in lines:
+            if line.startswith("BANNERS:"):
+                current = "banner"
+            elif line.startswith("TikTok:"):
+                social["TikTok"] = line.replace("TikTok:", "").strip()
+                current = "tiktok"
+            elif line.startswith("IG:"):
+                social["IG"] = line.replace("IG:", "").strip()
+                current = "ig"
+            elif line.startswith("FB:"):
+                social["FB"] = line.replace("FB:", "").strip()
+                current = "fb"
+            elif line.startswith("WHATSAPP:"):
+                social["WhatsApp"] = line.replace("WHATSAPP:", "").strip()
+                current = "whatsapp"
+            elif line.startswith("#"):
+                hashtags = line
+                break
+            elif current == "banner" and len(banners) < 2:
+                banners.append(line)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**🖼️ Banner Text**")
-        for b in banners[:2]:
-            st.code(b, language="plaintext")
-    with c2:
-        st.markdown("**📲 Social Posts**")
-        st.text_area("TikTok", social["TikTok"], height=60)
-        st.text_area("Instagram", social["IG"], height=70)
-        st.text_area("Facebook", social["FB"], height=70)
-        st.text_area("WhatsApp", social["WhatsApp"] or f"Hi! Interested in {phone}? Call/WhatsApp Tripple K: {TRIPPLEK_PHONE}", height=100)
-        st.text_input("Hashtags", hashtags.strip())
-
-    # ------- COMPETITOR IMAGES (non-blocking, only if data) -------
-    if searx_success:
-        st.subheader("📸 Competitor Product Images (Preview)")
-        other_urls = [r for r in web_results if not is_tripplek_url(r["url"])][:4]
-        valid_images = []
-        with st.status("🔍 Checking competitor images...", expanded=False):
-            for r in other_urls:
-                url = r["url"]
-                img_url = predict_image_url_with_groq(phone, url)
-                if img_url and is_image_valid(img_url):
-                    valid_images.append({"url": url, "img": img_url})
-                    if len(valid_images) >= 3:
-                        break
-        if valid_images:
-            cols = st.columns(2)
-            for i, item in enumerate(valid_images):
-                with cols[i % 2]:
-                    st.image(item["img"], caption=item["url"], use_container_width=True)
-        else:
-            st.caption("No competitor images found.")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**🖼️ Banner Text**")
+            for b in banners[:2]:
+                st.code(b, language="plaintext")
+        with c2:
+            st.markdown("**📲 Social Posts**")
+            st.text_area("TikTok", social["TikTok"], height=60)
+            st.text_area("Instagram", social["IG"], height=70)
+            st.text_area("Facebook", social["FB"], height=70)
+            st.text_area("WhatsApp", social["WhatsApp"], height=100)
+            st.text_input("Hashtags", hashtags.strip())
 
     st.divider()
-    st.caption(f"Generated for **Tripple K Communications** | [www.tripplek.co.ke](https://www.tripplek.co.ke) | Data: {fetch_date} EAT")
+    st.caption(f"Generated for **Tripple K Communications** | [www.tripplek.co.ke](https://www.tripplek.co.ke) | {fetch_date} EAT")
