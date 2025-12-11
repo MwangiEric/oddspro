@@ -9,13 +9,12 @@ from datetime import datetime
 ############################ CONFIG ################################
 GROQ_KEY = st.secrets.get("groq_key", "")
 PEXELS_KEY = st.secrets.get("pexels_api_key", "")
-if not GROQ_KEY or not PEXELS_KEY:
-    st.error("❌ Add `groq_key` and `pexels_api_key` to `.streamlit/secrets.toml`")
+if not GROQ_KEY:
+    st.error("❌ Add `groq_key` to `.streamlit/secrets.toml`")
     st.stop()
 
 from groq import Groq
 client = Groq(api_key=GROQ_KEY)
-PEXELS_HEADERS = {"Authorization": PEXELS_KEY}
 SEARX_URL = "https://searxng-587s.onrender.com/search"
 MODEL = "llama-3.1-8b-instant"
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
@@ -137,61 +136,23 @@ def build_groq_context(results: list[dict]) -> str:
     return "\n".join(lines) if lines else "No results found."
 
 
-def search_pexels_graphics() -> list:
-    queries = [
-        "smartphone mockup clean background",
-        "tech flyer background abstract green",
-        "minimal phone banner mint",
-        "digital ad template geometric",
-        "product display tech isolated"
-    ]
-    for q in queries:
-        try:
-            resp = requests.get(
-                "https://api.pexels.com/v1/search",
-                headers=PEXELS_HEADERS,
-                params={"query": q, "per_page": 8, "orientation": "landscape"},
-                timeout=8,
-            )
-            if resp.ok:
-                photos = resp.json().get("photos", [])
-                clean_photos = []
-                for p in photos:
-                    alt = (p.get("alt") or "").lower()
-                    if not any(w in alt for w in ["people", "person", "man", "woman", "hand", "holding", "using", "portrait", "face"]):
-                        clean_photos.append({"url": p["src"]["large"], "alt": alt})
-                if clean_photos:
-                    return clean_photos[:4]
-        except:
-            continue
-    return []
-
-
 def parse_groq_response(raw: str):
     parts = raw.split("---PRICE---")
     if len(parts) < 2:
-        return ("", "", "", "", "", raw)
+        return ("", "", "", raw)
     pre, rest = parts[0], parts[1]
     spec_parts = rest.split("---SPECS---", 1)
     if len(spec_parts) < 2:
-        return (pre.strip(), "", "", "", "", rest.strip())
+        return ("", "", "", rest.strip())
     price_block, rest2 = spec_parts[0].strip(), spec_parts[1].strip()
     insight_parts = rest2.split("---INSIGHTS---", 1)
     if len(insight_parts) < 2:
-        return (price_block, rest2, "", "", "", "")
+        return (price_block, rest2, "", "")
     specs_block, rest3 = insight_parts[0].strip(), insight_parts[1].strip()
-    visual_parts = rest3.split("---VISUALS---", 1)
-    if len(visual_parts) < 2:
-        return (price_block, specs_block, rest3, "", "", "")
-    insights_block, rest4 = visual_parts[0].strip(), visual_parts[1].strip()
-    design_parts = rest4.split("---DESIGN---", 1)
-    if len(design_parts) < 2:
-        return (price_block, specs_block, insights_block, rest4, "", "")
-    visuals_block, rest5 = design_parts[0].strip(), design_parts[1].strip()
-    copy_parts = rest5.split("---COPY---", 1)
-    design_block = copy_parts[0].strip()
+    copy_parts = rest3.split("---COPY---", 1)
+    insights_block = copy_parts[0].strip()
     copy_block = copy_parts[1].strip() if len(copy_parts) > 1 else ""
-    return (price_block, specs_block, insights_block, visuals_block, design_block, copy_block)
+    return (price_block, specs_block, insights_block, copy_block)
 
 
 def generate_marketing(phone: str, web_context: str, persona: str, tone: str) -> tuple:
@@ -209,12 +170,10 @@ TONE: {tone}
 WEB RESULTS:
 {web_context}
 
-INSTRUCTIONS — Return EXACTLY these 6 sections, separated by:
+INSTRUCTIONS — Return EXACTLY these 4 sections, separated by:
 ---PRICE---
 ---SPECS---
 ---INSIGHTS---
----VISUALS---
----DESIGN---
 ---COPY---
 
 1. PRICE:
@@ -229,22 +188,7 @@ INSTRUCTIONS — Return EXACTLY these 6 sections, separated by:
 3. INSIGHTS:
    - Selling Points, Tactics, Competitive Edge, Market Gap.
 
-4. VISUALS:
-   - Describe 2 flyer concepts using green & maroon.
-   - No people — only phone mockup, icons, text.
-   - Include Kenya context if relevant.
-
-5. DESIGN:
-   - Step-by-step layout guide for Canva/Designer:
-     • Canvas size (e.g., 1080x1080)
-     • Background: mint green gradient
-     • Phone: centered, isolated
-     • Text: store name (top), price (large green), specs (bullets), CTA bar (maroon)
-     • Fonts: Montserrat or Josefin Sans
-     • Icons: battery, camera in green
-     • CTA: “Shop now at Tripple K Communications”
-
-6. COPY:
+4. COPY:
    - BANNERS: 2 lines (≤40 chars), include store name
    - SOCIAL: Tweet, IG, FB — mention tripplek.co.ke
    - HASHTAGS: Include #TrippleK #TrippleKKE #PhoneDealsKE
@@ -263,7 +207,7 @@ RULES: Plain text only. No markdown. Be precise.
         return parse_groq_response(raw)
     except Exception as e:
         st.error(f"🤖 Groq error: {e}")
-        return "", "", "", "", "", ""
+        return "", "", "", ""
 
 
 ############################ STREAMLIT UI ####################################
@@ -281,20 +225,17 @@ tone = st.selectbox("🎨 Brand Tone",
 
 if st.button("🚀 Generate Tripple K Marketing Kit", type="primary"):
     fetch_date = datetime.now().strftime("%d %b %Y at %H:%M EAT")
-    
+
     with st.status("🔍 Generating Tripple K Ad Kit...", expanded=True) as status:
         st.write("🌐 Fetching Kenyan offers...")
         web_results = searx_all_results(phone)
         stock_note = enrich_stock_summary(web_results)
         web_context = build_groq_context(web_results)
 
-        st.write("🧠 Creating flyer, copy & design guide...")
-        price_block, specs_block, insights_block, visuals_block, design_block, copy_block = generate_marketing(
+        st.write("🧠 Creating copy, specs & insights...")
+        price_block, specs_block, insights_block, copy_block = generate_marketing(
             phone, web_context, persona, tone
         )
-
-        st.write("🖼️ Getting clean background images...")
-        pexels_images = search_pexels_graphics()
         status.update(label="✅ Tripple K Kit Ready!", state="complete", expanded=False)
 
     # ------- PRICE TABLE -------
@@ -325,25 +266,6 @@ if st.button("🚀 Generate Tripple K Marketing Kit", type="primary"):
     # ------- INSIGHTS -------
     with st.expander("📈 Strategic Market Insights"):
         st.text(insights_block or "None generated.")
-
-    # ------- DESIGN GUIDE -------
-    st.subheader("🎨 Flyer Design Guide (for Canva/Designer)")
-    st.text_area("Step-by-step instructions", design_block or "No guide generated.", height=200)
-
-    # ------- VISUAL CONCEPTS + IMAGES -------
-    c1, c2 = st.columns([1, 1.2])
-    with c1:
-        with st.expander("🖼️ AI Visual Concepts"):
-            st.text(visuals_block or "No concepts generated.")
-    with c2:
-        st.markdown("**📸 Clean Backgrounds (Pexels)**")
-        if pexels_images:
-            cols = st.columns(2)
-            for i, img in enumerate(pexels_images[:4]):
-                with cols[i % 2]:
-                    st.image(img["url"], use_container_width=True)
-        else:
-            st.caption("No graphics found.")
 
     # ------- COPY -------
     st.subheader("📣 Ready-to-Use Copy")
