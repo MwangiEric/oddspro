@@ -8,7 +8,6 @@ from datetime import datetime
 
 ############################ CONFIG ################################
 GROQ_KEY = st.secrets.get("groq_key", "")
-PEXELS_KEY = st.secrets.get("pexels_api_key", "")
 if not GROQ_KEY:
     st.error("❌ Add `groq_key` to `.streamlit/secrets.toml`")
     st.stop()
@@ -56,66 +55,88 @@ def inject_brand_css():
     footer {{
         visibility: hidden;
     }}
+    /* Mobile responsiveness */
+    @media (max-width: 768px) {{
+        .stTextArea > div > div > textarea,
+        .stCodeBlock {{
+            font-size: 14px !important;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }}
+        [data-testid="column"] {{
+            width: 100% !important;
+            margin-bottom: 1rem;
+        }}
+    }}
     </style>
     """, unsafe_allow_html=True)
 
 
 def searx_all_results(phone: str) -> list[dict]:
     global LAST_CALL
-    wait = RATE_LIMIT - (time.time() - LAST_CALL)
-    if wait > 0:
-        time.sleep(wait)
-    LAST_CALL = time.time()
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        wait = RATE_LIMIT - (time.time() - LAST_CALL)
+        if wait > 0:
+            time.sleep(wait)
+        LAST_CALL = time.time()
 
-    query = f'"{phone}" price Kenya'
-    try:
-        r = requests.get(
-            SEARX_URL,
-            params={
-                "q": query,
-                "format": "json",
-                "language": "en",
-                "safesearch": "0",
-            },
-            headers=HEADERS,
-            timeout=20,
-        )
-        r.raise_for_status()
-        raw = r.json().get("results", [])
-        enriched = []
-        for i, res in enumerate(raw, 1):
-            title = res.get("title", "")
-            content = res.get("content", "")
-            url = res.get("url", "")
-            full_text = f"{title} {content} {url}".lower()
-
-            price_match = re.search(
-                r'(?:ksh?|kes|shillings?)\s*[:\-]?\s*(\d{3,}(?:,\d{3})*)(?!\s*(?:gb|mb|gbp|usd|eur))',
-                full_text,
-                re.IGNORECASE
+        query = f'"{phone}" price Kenya'
+        try:
+            r = requests.get(
+                SEARX_URL,
+                params={
+                    "q": query,
+                    "format": "json",
+                    "language": "en",
+                    "safesearch": "0",
+                },
+                headers=HEADERS,
+                timeout=20,
             )
-            price = f"KSh {price_match.group(1)}" if price_match else None
+            r.raise_for_status()
+            raw = r.json().get("results", [])
+            enriched = []
+            for i, res in enumerate(raw, 1):
+                title = res.get("title", "")
+                content = res.get("content", "")
+                url = res.get("url", "")
+                full_text = f"{title} {content} {url}".lower()
 
-            # Stock detection
-            stock = "✅ In stock"
-            text_lower = (title + " " + content).lower()
-            if any(w in text_lower for w in ["out of stock", "sold out", "unavailable", "not in stock"]):
-                stock = "❌ Out of stock"
-            elif any(w in text_lower for w in ["limited stock", "few left", "ending soon", "flash sale", "hurry"]):
-                stock = "⚠️ Limited stock"
+                price_match = re.search(
+                    r'(?:ksh?|kes|shillings?)\s*[:\-]?\s*(\d{3,}(?:,\d{3})*)(?!\s*(?:gb|mb|gbp|usd|eur))',
+                    full_text,
+                    re.IGNORECASE
+                )
+                price = f"KSh {price_match.group(1)}" if price_match else None
 
-            enriched.append({
-                "position": i,
-                "title": title[:180],
-                "url": url,
-                "content": content[:300],
-                "price_ksh": price,
-                "stock": stock,
-            })
-        return enriched[:25]
-    except Exception as e:
-        st.warning(f"⚠️ SearX error: {str(e)[:60]}")
-        return []
+                # Stock detection
+                stock = "✅ In stock"
+                text_lower = (title + " " + content).lower()
+                if any(w in text_lower for w in ["out of stock", "sold out", "unavailable", "not in stock"]):
+                    stock = "❌ Out of stock"
+                elif any(w in text_lower for w in ["limited stock", "few left", "ending soon", "flash sale", "hurry"]):
+                    stock = "⚠️ Limited stock"
+
+                enriched.append({
+                    "position": i,
+                    "title": title[:180],
+                    "url": url,
+                    "content": content[:300],
+                    "price_ksh": price,
+                    "stock": stock,
+                })
+            return enriched[:60]  # Return up to 60 results
+
+        except Exception as e:
+            if attempt < max_retries:
+                st.warning(f"⚠️ SearX attempt {attempt}/3 failed. Retrying in {2**attempt}s...")
+                time.sleep(2**attempt)
+            else:
+                st.error(f"❌ SearX failed after {max_retries} attempts. Is the server down?")
+                return []
+    return []
 
 
 def enrich_stock_summary(results: list[dict]) -> str:
@@ -159,15 +180,15 @@ def generate_marketing(phone: str, web_context: str, persona: str, tone: str) ->
     prompt = f"""You are the official marketing AI for **Tripple K Communications** (www.tripplek.co.ke), a top Kenyan tech store.
 
 BRAND IDENTITY:
-- Colors: **Mint Green (#E8F5E9 background) + Maroon (#8B0000 accents)**
-- Style: **Clean, professional, product-focused flyers — NO PEOPLE**
-- CTA: Always include **"Shop now at Tripple K Communications"** or **"Visit tripplek.co.ke"**
+- Colors: Mint Green + Maroon
+- Style: Clean, benefit-driven, Kenya-focused
+- CTA: "Shop now at Tripple K Communications" or "Visit tripplek.co.ke"
 
 PHONE: {phone}
-TARGET: {persona}
+TARGET PERSONA: {persona}
 TONE: {tone}
 
-WEB RESULTS:
+WEB CONTEXT (from real Kenyan sites):
 {web_context}
 
 INSTRUCTIONS — Return EXACTLY these 4 sections, separated by:
@@ -180,20 +201,24 @@ INSTRUCTIONS — Return EXACTLY these 4 sections, separated by:
    - For EVERY result with visible KSh price, output:
      "Retailer - KSh X,XXX - https://..."
    - Extract retailer from domain (e.g., jumia.co.ke → Jumia)
-   - NO LIMIT — list all verified prices.
 
 2. SPECS:
-   - Infer up to 10 key specs from web results. Arrange them from most desirable
+   - List up to 10 real or inferred key specs (e.g., battery, camera, RAM, storage)
+   - Prioritize specs mentioned in web snippets
 
-3. INSIGHTS:
-   - Selling Points, Tactics, Competitive Edge, Market Gap.
+3. INSIGHTS (must be grounded in web context):
+   - What Kenyan retailers highlight? (e.g., “5000mAh battery”, “5G ready”)
+   - Price competitiveness? Stock availability?
+   - What’s missing? (e.g., “No one mentions warranty” → opportunity)
+   - Write as short, clear paragraphs or bullet-like lines for readability.
 
 4. COPY:
-   - BANNERS: 2 lines (≤40 chars), include store name
-   - SOCIAL: Tweet, IG, FB — mention tripplek.co.ke
-   - HASHTAGS: Include #TrippleK #TrippleKKE #PhoneDealsKE
+   - BANNERS: 2 punchy lines (≤40 chars), include store name
+   - TIKTOK: 1 engaging caption (<100 chars) highlighting a top benefit + CTA
+   - IG / FB: Slightly longer, include specs or deal urgency
+   - HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE + 1 model tag
 
-RULES: Plain text only. No markdown. Be precise.
+RULES: Plain text only. No markdown. Be precise and data-aware.
 """
     try:
         completion = client.chat.completions.create(
@@ -227,8 +252,11 @@ if st.button("🚀 Generate Tripple K Marketing Kit", type="primary"):
     fetch_date = datetime.now().strftime("%d %b %Y at %H:%M EAT")
 
     with st.status("🔍 Generating Tripple K Ad Kit...", expanded=True) as status:
-        st.write("🌐 Fetching Kenyan offers...")
+        st.write("🌐 Fetching Kenyan offers (up to 60 results)...")
         web_results = searx_all_results(phone)
+        if not web_results:
+            st.error("🛑 No data retrieved. Aborting.")
+            st.stop()
         stock_note = enrich_stock_summary(web_results)
         web_context = build_groq_context(web_results)
 
@@ -265,40 +293,52 @@ if st.button("🚀 Generate Tripple K Marketing Kit", type="primary"):
 
     # ------- INSIGHTS -------
     with st.expander("📈 Strategic Market Insights"):
-        st.text(insights_block or "None generated.")
+        if insights_block:
+            for line in insights_block.splitlines():
+                if line.strip():
+                    st.markdown(f"- {line.strip()}")
+        else:
+            st.text("None generated.")
 
     # ------- COPY -------
     st.subheader("📣 Ready-to-Use Copy")
+
     lines = [l.strip() for l in copy_block.splitlines() if l.strip()]
     banners = []
-    social = {"Tweet": "", "IG": "", "FB": ""}
+    social = {"TikTok": "", "IG": "", "FB": ""}
     hashtags = ""
+    in_hashtags = False
+
     for line in lines:
         if line.startswith("BANNERS:"):
             continue
         elif line.startswith("#"):
             hashtags = line
-            break
-        elif "Tweet:" in line or (not any(x in line for x in ["IG:", "FB:", "BANNERS:"]) and len(banners) < 2):
-            banners.append(line)
+            in_hashtags = True
+        elif in_hashtags:
+            hashtags += " " + line
+        elif "TikTok:" in line:
+            social["TikTok"] = line.replace("TikTok:", "").strip()
         elif "IG:" in line:
             social["IG"] = line.replace("IG:", "").strip()
         elif "FB:" in line:
             social["FB"] = line.replace("FB:", "").strip()
-        elif not banners and not any(x in line for x in ["IG:", "FB:"]):
+        elif not banners and not any(x in line for x in ["TikTok:", "IG:", "FB:"]):
+            banners.append(line)
+        elif len(banners) < 2 and not any(x in line for x in ["TikTok:", "IG:", "FB:"]):
             banners.append(line)
 
-    c3, c4 = st.columns(2)
-    with c3:
+    c1, c2 = st.columns(2)
+    with c1:
         st.markdown("**🖼️ Banner Text**")
         for b in banners[:2]:
             st.code(b, language="plaintext")
-    with c4:
+    with c2:
         st.markdown("**📲 Social Posts**")
-        st.text_area("Twitter", social["Tweet"], height=70)
+        st.text_area("TikTok", social["TikTok"], height=60)
         st.text_area("Instagram", social["IG"], height=70)
         st.text_area("Facebook", social["FB"], height=70)
-        st.text_input("Hashtags", hashtags)
+        st.text_input("Hashtags", hashtags.strip())
 
     # ------- FOOTER -------
     st.divider()
