@@ -302,7 +302,7 @@ if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
     
     if prices:
         min_p, max_p, avg_p = min(prices), max(prices), round(sum(prices)/len(prices))
-        st.markdown(f"**Price Range:** KSh {min_p:,} â€" KSh {max_p:,} | **Avg:** KSh {avg_p:,}")
+        st.markdown(f"**Price Range:** KSh {min_p:,} - KSh {max_p:,} | **Avg:** KSh {avg_p:,}")
         rec_price = max_p - 500 if max_p > 5000 else max_p
         st.success(f"ðŸ'° **Recommended Tripple K Price:** KSh {rec_price:,}")
     
