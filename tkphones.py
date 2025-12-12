@@ -7,18 +7,10 @@ import pandas as pd
 from datetime import datetime
 from urllib.parse import urlparse
 import concurrent.futures
-import math
 
 ############################ CONFIG ################################
-GROQ_KEY = st.secrets.get("groq_key", "")
-if not GROQ_KEY:
-    st.error("Add groq_key to .streamlit/secrets.toml")
-    st.stop()
 
-from groq import Groq
-client = Groq(api_key=GROQ_KEY)
-
-# *** CONFIG: Failover enabled, but your preferred instance is FIRST. ***
+# Robust SearXNG instances for failover. Your preferred instance is FIRST.
 SEARX_INSTANCES = [
     "https://searxng-587s.onrender.com/", 
     "https://searx.be/search",
@@ -27,30 +19,24 @@ SEARX_INSTANCES = [
     "https://northboot.xyz/search",
 ]
 
-MODEL = "llama-3.1-8b-instant"
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
-# *** CONFIG: Rate limit removed ***
-RATE_LIMIT = 0 
-LAST_CALL = 0
+RATE_LIMIT = 0 # No rate limit
 
+# Branding
 BRAND_GREEN = "#4CAF50"
 BRAND_MAROON = "#8B0000"
 BACKGROUND_LIGHT = "#F9FAF8"
 TRIPPLEK_PHONE = "+254700123456"
 
 now = datetime.now()
-is_christmas = (now.month == 12 and now.day >= 1) or (now.month == 1 and now.day <= 10)
-CHRISTMAS_HOOK = "Perfect Christmas gift with warranty & fast delivery!" if is_christmas else ""
 CURRENT_YEAR = f'{now.year:04d}'
 CURRENT_MONTH = f'{now.month:02d}'
 ####################################################################
 
 
-# Initialize session state for multi-stage workflow
+# Initialize session state for workflow
 if 'results' not in st.session_state:
     st.session_state['results'] = []
-if 'kit' not in st.session_state:
-    st.session_state['kit'] = None
 if 'phone' not in st.session_state:
     st.session_state['phone'] = ""
 
@@ -79,29 +65,20 @@ def inject_brand_css():
     .main {{
         background-color: {BACKGROUND_LIGHT};
     }}
-    @media (max-width: 768px) {{
-        .stTextArea textarea, .stCodeBlock {{
-            font-size: 14px !important;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }}
-    }}
     </style>
     """, unsafe_allow_html=True)
 
 
 @st.cache_resource
 def warm_up_searx():
-    """Ping all SearXNG instances on startup (now just the single one)."""
+    """Pings all instances to find available ones."""
     def ping_instance(url):
         try:
-            # Increased timeout for initial ping
             r = requests.get(url, params={"q": "test", "format": "json"}, timeout=15)
             return url if r.status_code == 200 else None
         except:
             return None
     
-    # Check all instances concurrently
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         results = list(executor.map(ping_instance, SEARX_INSTANCES))
     
@@ -119,59 +96,16 @@ def extract_retailer(url: str) -> str:
     return retailer.capitalize() if retailer else "Unknown"
 
 
-def extract_slug_from_url(url: str) -> str:
-    clean = url.split("?", 1)[0].split("#", 1)[0]
-    parts = [p for p in clean.split("/") if p]
-    return parts[-1].lower() if parts else ""
-
-
-def predict_image_url(phone: str, url: str) -> str:
-    """Uses Groq to predict likely product image URL with dynamic date."""
-    slug = extract_slug_from_url(url)
-    
-    prompt = f"""Product: {phone}
-URL: {url}
-Slug: {slug}
-
-Most Kenyan e-commerce sites use WooCommerce. Predict the direct image URL.
-Common patterns:
-/wp-content/uploads/{CURRENT_YEAR}/{CURRENT_MONTH}/{slug}.jpg
-/wp-content/uploads/{CURRENT_YEAR}/{CURRENT_MONTH}/{slug}-1024x1024.jpg
-
-Return only the full image URL or "unknown"."""
-    
-    try:
-        comp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=100,
-            timeout=8
-        )
-        pred = comp.choices[0].message.content.strip()
-        return pred if pred != "unknown" and pred.startswith("http") else ""
-    except:
-        return ""
-
-
-def validate_image(url: str) -> bool:
-    try:
-        r = requests.head(url, timeout=3, headers=HEADERS)
-        return r.status_code == 200 and "image" in r.headers.get("content-type", "").lower()
-    except:
-        return False
-
-
 def fetch_kenyan_prices(phone: str) -> list[dict]:
     
     online_instances = warm_up_searx()
     
     if not online_instances:
-        st.error(f"All search API instances are currently unavailable. Please check connectivity or try again.")
+        st.error(f"All search API instances are currently unavailable.")
         return []
 
+    # Try each online instance sequentially
     for instance in online_instances:
-        # Rate limit removed
         
         try:
             r = requests.get(
@@ -183,33 +117,33 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                     "safesearch": "0"
                 },
                 headers=HEADERS,
-                # *** CONFIG: Increased timeout to 45 seconds ***
-                timeout=45 
+                timeout=45 # High timeout as requested
             )
             
             if r.status_code == 200:
                 raw_results = r.json().get("results", [])
                 
-                # SMART FILTER: Prioritize TLDs and known Kenyan retailers
-                kenyan_indicators = ['.ke', 'jumia.co.ke', 'kilimall.co.ke', 'tripplek.co.ke', 'phoneplacekenya.com', 'masoko.com'] 
+                # --- CHANGE IMPLEMENTED HERE ---
+                # SMART FILTER: Only searching for 'ke' string in URL
+                kenyan_indicators = ['ke'] 
                 
                 filtered_results = []
                 for res in raw_results:
                     url = res.get("url", "").lower()
-                    # Filter for Kenyan URLs
+                    # Filter for Kenyan URLs (must contain 'ke')
                     if any(indicator in url for indicator in kenyan_indicators):
                         filtered_results.append(res)
+                # -----------------------------
                 
                 results = filtered_results[:60]
-                
                 enriched = []
                 for res in results:
                     title = res.get("title", "")
                     content = res.get("content", "")
                     url = res.get("url", "")
-                    
                     search_text = f"{title} {content}".lower() 
                     
+                    # Price Extraction
                     price_match = re.search(
                         r'(?:ksh?|kes|shillings?|k\.sh\.)\s*[:\-]?\s*(\d{3,}(?:,\d{3})*)',
                         search_text,
@@ -224,6 +158,7 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                             price_int = int(clean_price)
                             price_str = f"KSh {price_int:,}" 
                     
+                    # Stock Check
                     stock = "In stock"
                     if any(w in search_text for w in ["out of stock", "sold out", "unavailable"]):
                         stock = "Out of stock"
@@ -243,162 +178,10 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                 return enriched
                 
         except Exception as e:
-            # If the current instance fails, try the next one (failover logic)
             st.sidebar.warning(f"Search failed for {instance}. Trying next available search engine...")
             continue
     
-    return [] # Returns empty list if all instances fail or return no data
-
-
-def generate_with_data(phone: str, results: list[dict], persona: str, tone: str) -> dict:
-    context_lines = []
-    for r in results:
-        price = f" | {r['price_ksh_str']}" if r["price_ksh_str"] else ""
-        context_lines.append(
-            f"Retailer: {r.get('retailer', 'Unknown')}\n"
-            f"Title: {r['title']}{price}\n"
-            f"URL: {r['url']}\n"
-            f"Snippet: {r['content']}\n"
-            f"Stock: {r['stock']}\n---"
-        )
-    web_context = "\n".join(context_lines) if context_lines else "No data"
-    
-    prompt = f"""You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
-
-TRIPPLE K VALUE PROPS (mention in copy):
-* Accredited distributor
-* Official warranty
-* Pay on delivery
-* Nairobi delivery
-
-{f"SEASONAL: {CHRISTMAS_HOOK}" if CHRISTMAS_HOOK else ""}
-
-PHONE: {phone}
-PERSONA: {persona}
-TONE: {tone}
-
-MARKET DATA (Use this for facts, specs, and price comparison):
-{web_context}
-
-OUTPUT EXACTLY 4 SECTIONS, each starting with the required marker:
-
----PRICE---
-List: "Retailer - KSh X,XXX - URL" for each price result. Include the retailer name from the context. (DO NOT INCLUDE YOUR OWN RECOMMENDED PRICE HERE)
-
----SPECS---
-5-10 key specs from data or general knowledge
-
----INSIGHTS---
-3-5 bullet points on market trends, what makes this phone compelling for the PERSONA.
-
----COPY---
-BANNERS: 2 lines, max 40 chars, include "Tripple K"
-TIKTOK: 1 fun line <100 chars, use emoji for Playful tone
-IG: 2-3 sentences highlighting benefits and value props
-FB: Similar to IG
-WHATSAPP: Include {TRIPPLEK_PHONE}, mention warranty, pay on delivery, {CHRISTMAS_HOOK if CHRISTMAS_HOOK else ""}
-HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE
-
-Plain text only. Use real data."""
-
-    try:
-        comp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5, 
-            max_tokens=2400,
-            timeout=50
-        )
-        
-        raw = comp.choices[0].message.content.strip()
-        
-        parts = raw.split("---PRICE---")
-        if len(parts) < 2:
-            return {"error": f"Invalid format from AI. Missing ---PRICE--- marker in output: \n{raw[:500]}..."}
-        
-        rest = parts[1]
-        price_block = rest.split("---SPECS---")[0].strip() if "---SPECS---" in rest else ""
-        
-        rest = rest.split("---SPECS---", 1)[1] if "---SPECS---" in rest else ""
-        specs_block = rest.split("---INSIGHTS---")[0].strip() if "---INSIGHTS---" in rest else ""
-        
-        rest = rest.split("---INSIGHTS---", 1)[1] if "---INSIGHTS---" in rest else ""
-        insights_block = rest.split("---COPY---")[0].strip() if "---INSIGHTS---" in rest else ""
-        
-        copy_block = rest.split("---COPY---", 1)[1].strip() if "---COPY---" in rest else ""
-        
-        return {
-            "prices": price_block,
-            "specs": specs_block,
-            "insights": insights_block,
-            "copy": copy_block
-        }
-        
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def generate_without_data(phone: str, persona: str, tone: str) -> dict:
-    prompt = f"""You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
-
-Create marketing copy for:
-PHONE: {phone}
-PERSONA: {persona}
-TONE: {tone}
-
-TRIPPLE K VALUE PROPS:
-* Accredited distributor
-* Official warranty
-* Pay on delivery
-* Nairobi delivery
-
-{f"SEASONAL: {CHRISTMAS_HOOK}" if CHRISTMAS_HOOK else ""}
-
-DO NOT invent prices or fake specs. Focus on benefits and trust.
-
-OUTPUT EXACTLY 2 SECTIONS, each starting with the required marker:
-
----SPECS---
-General expected specs for this phone model (if known)
-
----COPY---
-BANNERS: 2 lines, max 40 chars
-TIKTOK: 1 line <100 chars
-IG: 2-3 sentences
-FB: Similar to IG
-WHATSAPP: Include {TRIPPLEK_PHONE}, warranty, delivery, {CHRISTMAS_HOOK if CHRISTMAS_HOOK else ""}
-HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE
-
-Plain text only."""
-
-    try:
-        comp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=1000,
-            timeout=30
-        )
-        
-        raw = comp.choices[0].message.content.strip()
-        
-        specs_block = ""
-        copy_block = raw
-        
-        if "---SPECS---" in raw:
-            parts = raw.split("---SPECS---", 1)[1]
-            specs_block = parts.split("---COPY---")[0].strip() if "---COPY---" in parts else parts.strip()
-            copy_block = parts.split("---COPY---", 1)[1].strip() if "---COPY---" in parts else ""
-        
-        return {
-            "prices": "",
-            "specs": specs_block,
-            "insights": "",
-            "copy": copy_block
-        }
-        
-    except Exception as e:
-        return {"error": str(e)}
+    return [] 
 
 
 def render_price_table(results: list[dict]):
@@ -416,6 +199,7 @@ def render_price_table(results: list[dict]):
                 "Link": r["url"],
                 "Stock": r["stock"],
                 "price_val": r["price_ksh_int"],
+                "title": r["title"],
                 "is_rec": False
             })
 
@@ -424,6 +208,7 @@ def render_price_table(results: list[dict]):
     if prices_numeric_for_calc:
         price_series = pd.Series(prices_numeric_for_calc)
         
+        # Calculation logic for recommended price
         rec_price_base = price_series.quantile(0.75)
         rec_price = int(round((rec_price_base - 500) / 100) * 100)
         
@@ -437,6 +222,7 @@ def render_price_table(results: list[dict]):
             "Link": "https://www.tripplek.co.ke",
             "Stock": "Available",
             "price_val": rec_price,
+            "title": f"{st.session_state.get('phone', 'Phone Model')} - Competitive Pricing",
             "is_rec": True
         })
     
@@ -445,9 +231,10 @@ def render_price_table(results: list[dict]):
     
     # Prepare data for st.dataframe
     df = pd.DataFrame([{
-        "Price": r["Price"],
         "Retailer": r["Retailer"],
+        "Price": r["Price"],
         "Stock": r["Stock"],
+        "Product Title": r["title"] if r["is_rec"] else r["title"][:50] + "...",
         # Use Markdown links in a helper column for a clickable link in the dataframe
         "Link": f"[View Link]({r['Link']})" if r['Link'].startswith('http') else "N/A"
     } for r in rows])
@@ -460,75 +247,26 @@ def render_price_table(results: list[dict]):
     )
 
 
-def parse_and_render_copy(copy_block: str, phone: str):
-    """Parses the copy block robustly and renders the UI sections."""
-    
-    markers = ["BANNERS:", "TIKTOK:", "IG:", "FB:", "WHATSAPP:", "HASHTAGS:"]
-    social_data = {}
-    banners = []
-    hashtags = ""
-    
-    parts = re.split(f'({"|".join(markers)})', copy_block, flags=re.IGNORECASE)
-    
-    for i in range(1, len(parts), 2):
-        marker = parts[i].upper().strip(':')
-        content = parts[i+1].strip()
-        
-        if marker == "BANNERS":
-            banners = [l.strip() for l in content.splitlines() if l.strip()][:2]
-        elif marker == "HASHTAGS":
-            hashtags = content.splitlines()[-1].strip() if content else ""
-        elif marker in ("TIKTOK", "IG", "FB", "WHATSAPP"):
-            key = marker.capitalize() if marker != "WHATSAPP" else "WhatsApp"
-            social_data[key] = content
-
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Banner Text**")
-        if banners:
-            for b in banners:
-                st.code(b, language="text")
-        else:
-            st.caption("No banner text generated.")
-    
-    with c2:
-        st.markdown("**Social Media Copy**")
-        st.text_area("TikTok", social_data.get("TikTok", ""), height=60, key="tt")
-        st.text_area("Instagram", social_data.get("IG", ""), height=70, key="ig")
-        st.text_area("Facebook", social_data.get("FB", ""), height=70, key="fb")
-        st.text_area("WhatsApp", social_data.get("WhatsApp", f"Get {phone} at Tripple K! {TRIPPLEK_PHONE}"), height=100, key="wa")
-        st.text_input("Hashtags", hashtags)
-
-
 ############################ STREAMLIT UI ####################################
 inject_brand_css()
 
 # Sidebar
 with st.sidebar:
-    st.title("Settings")
-    use_web_data = st.toggle("Use live web data", value=True, help="Search Kenyan retailers for prices before generating copy.")
+    st.title("About this Tool")
+    st.markdown("""
+    This is a **Minimal, Non-AI** price comparison tool for Tripple K Communications.
     
-    persona = st.selectbox("Target Audience", 
-        ["All Kenyan buyers", "Budget students", "Tech-savvy pros", "Camera creators", "Business execs"],
-        index=0)
-    
-    tone = st.selectbox("Brand Tone", 
-        ["Playful", "Rational", "Luxury", "FOMO"],
-        index=0)
-    
+    It retrieves live competitor pricing from Kenyan e-commerce sites to help set a competitive Tripple K price.
+    """)
     st.divider()
     st.caption("Tripple K Communications")
     st.caption("Accredited distributor")
-    st.caption("Official warranty included")
-    if CHRISTMAS_HOOK:
-        st.success(CHRISTMAS_HOOK)
 
 # Main view
-st.title("Tripple K Phone Ad Generator")
-st.caption("Data-Driven Marketing Kits | www.tripplek.co.ke")
+st.title("Tripple K Price Finder (Minimal)")
+st.caption("Data Retrieval and Comparison Only | tripplek.co.ke")
 
-phone_input = st.text_input("Phone model", placeholder="e.g., Samsung Galaxy A17")
+phone_input = st.text_input("Phone model", placeholder="e.g., Samsung Galaxy A17, Xiaomi Poco X7")
 
 # --- STAGE 1: SEARCH ---
 if st.button("Search Kenyan Prices", type="primary"):
@@ -536,19 +274,14 @@ if st.button("Search Kenyan Prices", type="primary"):
         st.error("Please enter a phone model")
     else:
         st.session_state['phone'] = phone_input
-        st.session_state['kit'] = None 
         
-        with st.status("Searching Kenyan retailers (max 45s wait on primary instance)...", expanded=True) as status:
-            if use_web_data:
-                results = fetch_kenyan_prices(phone_input)
-                
-                if not results:
-                    st.warning("No relevant Kenyan web data found. The primary search API might be down.")
-                else:
-                    st.write(f"Found {len(results)} relevant Kenyan listings")
+        with st.status("Searching Kenyan retailers (max 45s wait per instance)...", expanded=True) as status:
+            results = fetch_kenyan_prices(phone_input)
+            
+            if not results:
+                st.warning("No relevant Kenyan web data found or all search APIs are unreachable.")
             else:
-                results = []
-                st.info("Web data search skipped by user setting.")
+                st.write(f"Found {len(results)} total listings.")
 
             st.session_state['results'] = results
             status.update(label="Search Complete!", state="complete", expanded=False)
@@ -557,97 +290,32 @@ if st.button("Search Kenyan Prices", type="primary"):
 
 
 # Display results if available
-if st.session_state['results'] or st.session_state['kit']:
+if st.session_state['results']:
     phone = st.session_state.get('phone', phone_input)
-    st.markdown(f"## {phone} - Market Analysis")
+    st.markdown(f"## {phone} - Price Analysis")
     
     prices_numeric = [r["price_ksh_int"] for r in st.session_state['results'] if r["price_ksh_int"] > 0]
     
-    if st.session_state['results']:
-        # Summary
-        if prices_numeric:
-            min_p, max_p = min(prices_numeric), max(prices_numeric)
-            oos_count = sum(1 for r in st.session_state['results'] if "out" in r["stock"].lower())
-            stock_note = "Most listings are in stock." if oos_count == 0 else "Some retailers are out of stock."
-            
-            st.info(f"**Market Price Range:** KSh {min_p:,} to KSh {max_p:,}. {stock_note}")
+    if prices_numeric:
+        min_p, max_p = min(prices_numeric), max(prices_numeric)
+        oos_count = sum(1 for r in st.session_state['results'] if "out" in r["stock"].lower())
+        stock_note = "Most listings are in stock." if oos_count == 0 else "Some retailers are out of stock."
         
-        # Price Table
-        st.subheader("Competitor Price Comparison")
-        render_price_table(st.session_state['results'])
+        st.info(f"**Market Price Range:** KSh {min_p:,} to KSh {max_p:,}. {stock_note}")
     
+    st.subheader("Competitor Price Comparison")
+    render_price_table(st.session_state['results'])
     
-    # --- STAGE 2: GENERATE COPY ---
-    st.subheader("Generate Ad Copy")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("Generate Data-Driven Copy", type="primary", disabled=not bool(prices_numeric)):
-            with st.status("Generating copy with market data...", expanded=False):
-                kit = generate_with_data(phone, st.session_state['results'], persona, tone)
-                if "error" in kit:
-                    st.error(f"AI error: {kit['error']}")
-                else:
-                    st.session_state['kit'] = kit
-                    st.success("Copy Generation Complete!")
-            st.rerun()
+    # --- Display Raw Data for Debugging/Transparency ---
+    st.subheader("Raw Data Snippets")
+    with st.expander("Click to view snippets from the raw search results (for debugging)"):
+        for i, r in enumerate(st.session_state['results']):
+            st.markdown(f"**{i+1}. {r['retailer']}** (`{r['price_ksh_str']}`) - Stock: {r['stock']}")
+            st.caption(f"**URL:** {r['url']}")
+            st.caption(f"**Title:** {r['title']}")
+            st.markdown(f"*{r['content']}*")
+            st.markdown("---")
 
-    with col2:
-        if st.button("Generate Generic Copy"):
-            with st.status("Generating generic copy...", expanded=False):
-                kit = generate_without_data(phone, persona, tone)
-                if "error" in kit:
-                    st.error(f"AI error: {kit['error']}")
-                else:
-                    st.session_state['kit'] = kit
-                    st.success("Copy Generation Complete!")
-            st.rerun()
-
-# --- DISPLAY FINAL KIT ---
-if st.session_state['kit']:
-    kit = st.session_state['kit']
-    st.markdown("---")
-    st.markdown(f"## Marketing Kit for {st.session_state['phone']}")
-    
-    # Specs
-    if kit.get("specs"):
-        st.subheader("Key Specs")
-        st.text(kit["specs"])
-    
-    # Insights (Only available with data)
-    if kit.get("insights") and st.session_state['results']:
-        with st.expander("Strategic Market Insights"):
-            for line in kit["insights"].splitlines():
-                if line.strip():
-                    st.markdown(f"* {line.strip()}")
-    
-    # Ad Copy
-    if kit.get("copy"):
-        st.subheader("Ready-to-Use Ad Copy")
-        parse_and_render_copy(kit["copy"], st.session_state['phone'])
-
-    # Product images (Only available with data)
-    if st.session_state['results']:
-        st.subheader("Product Images (Preview)")
-        with st.spinner("Checking retailer sites..."):
-            valid_images = []
-            for r in st.session_state['results'][:5]:
-                if "tripplek" not in r["url"].lower():
-                    img_url = predict_image_url(st.session_state['phone'], r["url"])
-                    if img_url and validate_image(img_url):
-                        valid_images.append({"url": r["url"], "img": img_url})
-                        if len(valid_images) >= 3:
-                            break
-            
-            if valid_images:
-                cols = st.columns(3)
-                for i, item in enumerate(valid_images):
-                    with cols[i]:
-                        st.image(item["img"], use_container_width=True)
-                        st.caption(extract_retailer(item["url"]))
-            else:
-                st.caption("No product images found")
     
     st.divider()
-    st.caption(f"Generated {datetime.now().strftime('%d %b %Y %H:%M EAT')} | Tripple K Communications | tripplek.co.ke")
+    st.caption(f"Data Retrieved {datetime.now().strftime('%d %b %Y %H:%M EAT')} | tripplek.co.ke")
