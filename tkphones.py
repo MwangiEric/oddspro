@@ -7,6 +7,7 @@ import pandas as pd
 from datetime import datetime
 from urllib.parse import urlparse
 import concurrent.futures
+import math
 
 ############################ CONFIG ################################
 GROQ_KEY = st.secrets.get("groq_key", "")
@@ -37,6 +38,8 @@ TRIPPLEK_PHONE = "+254700123456"
 now = datetime.now()
 is_christmas = (now.month == 12 and now.day >= 1) or (now.month == 1 and now.day <= 10)
 CHRISTMAS_HOOK = "Perfect Christmas gift with warranty & fast delivery!" if is_christmas else ""
+CURRENT_YEAR = f'{now.year:04d}'
+CURRENT_MONTH = f'{now.month:02d}'
 ####################################################################
 
 
@@ -97,11 +100,13 @@ def warm_up_searx():
 
 
 def extract_retailer(url: str) -> str:
+    """Extracts a clean retailer name from a URL."""
     if not url:
-        return "unknown"
+        return "Unknown"
     domain = urlparse(url).netloc.lower()
     domain = re.sub(r"^(www|m|mobile|shop)\.", "", domain)
-    return domain.split(".")[0]
+    retailer = domain.split(".")[0]
+    return retailer.capitalize() if retailer else "Unknown"
 
 
 def extract_slug_from_url(url: str) -> str:
@@ -111,16 +116,18 @@ def extract_slug_from_url(url: str) -> str:
 
 
 def predict_image_url(phone: str, url: str) -> str:
-    """Use Groq to predict likely product image URL"""
+    """SMART: Uses Groq to predict likely product image URL with dynamic date."""
     slug = extract_slug_from_url(url)
+    
+    # 💡 SMART: Inject current year and month for more accurate WooCommerce/WP path prediction
     prompt = f"""Product: {phone}
 URL: {url}
 Slug: {slug}
 
 Most Kenyan e-commerce sites use WooCommerce. Predict the direct image URL.
 Common patterns:
-/wp-content/uploads/2024/12/{slug}.jpg
-/wp-content/uploads/2024/12/{slug}-1024x1024.jpg
+/wp-content/uploads/{CURRENT_YEAR}/{CURRENT_MONTH}/{slug}.jpg
+/wp-content/uploads/{CURRENT_YEAR}/{CURRENT_MONTH}/{slug}-1024x1024.jpg
 
 Return only the full image URL or "unknown"."""
     
@@ -178,33 +185,44 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                     title = res.get("title", "")
                     content = res.get("content", "")
                     url = res.get("url", "")
-                    full_text = f"{title} {content} {url}".lower()
+                    
+                    # 💡 SMART: Only search title and content for price, not URL, for higher accuracy
+                    search_text = f"{title} {content}".lower() 
                     
                     price_match = re.search(
-                        r'(?:ksh?|kes|shillings?)\s*[:\-]?\s*(\d{3,}(?:,\d{3})*)',
-                        full_text,
+                        r'(?:ksh?|kes|shillings?|k\.sh\.)\s*[:\-]?\s*(\d{3,}(?:,\d{3})*)',
+                        search_text,
                         re.IGNORECASE
                     )
-                    price = f"KSh {price_match.group(1)}" if price_match else None
+                    
+                    price_str = None
+                    price_int = 0
+                    if price_match:
+                        clean_price = re.sub(r"[^\d]", "", price_match.group(1))
+                        if clean_price.isdigit():
+                            price_int = int(clean_price)
+                            price_str = f"KSh {price_int:,}" # Formatted string for display
                     
                     stock = "In stock"
-                    if any(w in full_text for w in ["out of stock", "sold out", "unavailable"]):
+                    if any(w in search_text for w in ["out of stock", "sold out", "unavailable"]):
                         stock = "Out of stock"
-                    elif any(w in full_text for w in ["limited stock", "few left", "hurry"]):
+                    elif any(w in search_text for w in ["limited stock", "few left", "hurry"]):
                         stock = "Limited stock"
                     
                     enriched.append({
                         "title": title[:180],
                         "url": url,
                         "content": content[:300],
-                        "price_ksh": price,
-                        "stock": stock
+                        "price_ksh_str": price_str,
+                        "price_ksh_int": price_int, # 💡 SMART: Store the numeric value for later calculations
+                        "stock": stock,
+                        "retailer": extract_retailer(url) # 💡 SMART: Extract retailer early
                     })
                 
                 return enriched
                 
         except Exception as e:
-            st.sidebar.warning(f"Trying backup search engine...")
+            st.sidebar.warning(f"Failed to connect to {instance}. Trying backup search engine...")
             continue
     
     return []
@@ -212,9 +230,11 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
 
 def generate_with_data(phone: str, results: list[dict], persona: str, tone: str) -> dict:
     context_lines = []
+    # 💡 SMART: Build context with retailer name included
     for r in results:
-        price = f" | {r['price_ksh']}" if r["price_ksh"] else ""
+        price = f" | {r['price_ksh_str']}" if r["price_ksh_str"] else ""
         context_lines.append(
+            f"Retailer: {r.get('retailer', 'Unknown')}\n"
             f"Title: {r['title']}{price}\n"
             f"URL: {r['url']}\n"
             f"Snippet: {r['content']}\n"
@@ -242,18 +262,18 @@ MARKET DATA:
 OUTPUT 4 SECTIONS:
 
 ---PRICE---
-List: "Retailer - KSh X,XXX - URL" for each result with price
+List: "Retailer - KSh X,XXX - URL" for each result with price. Include the retailer name from the context.
 
 ---SPECS---
-5-10 key specs from data
+5-10 key specs from data or general knowledge
 
 ---INSIGHTS---
-3-5 bullet points on market trends, what makes this phone compelling
+3-5 bullet points on market trends, what makes this phone compelling for the PERSONA.
 
 ---COPY---
 BANNERS: 2 lines, max 40 chars, include "Tripple K"
 TIKTOK: 1 fun line <100 chars, use emoji for Playful tone
-IG: 2-3 sentences highlighting benefits
+IG: 2-3 sentences highlighting benefits and value props
 FB: Similar to IG
 WHATSAPP: Include {TRIPPLEK_PHONE}, mention warranty, pay on delivery, {CHRISTMAS_HOOK if CHRISTMAS_HOOK else ""}
 HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE
@@ -273,7 +293,7 @@ Plain text only. Use real data."""
         
         parts = raw.split("---PRICE---")
         if len(parts) < 2:
-            return {"error": "Invalid format"}
+            return {"error": "Invalid format from AI. Missing ---PRICE---"}
         
         rest = parts[1]
         price_block = rest.split("---SPECS---")[0].strip() if "---SPECS---" in rest else ""
@@ -298,6 +318,7 @@ Plain text only. Use real data."""
 
 
 def generate_without_data(phone: str, persona: str, tone: str) -> dict:
+    # (function remains largely the same, focusing on trust/value props)
     prompt = f"""You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
 
 Create marketing copy for:
@@ -424,15 +445,10 @@ if st.button("Generate Marketing Kit", type="primary"):
     
     # 2-sentence summary
     if use_web_data and results:
-        prices = []
-        for r in results:
-            if r["price_ksh"]:
-                clean = re.sub(r"[^\d]", "", r["price_ksh"])
-                if clean.isdigit():
-                    prices.append(int(clean))
+        prices_numeric = [r["price_ksh_int"] for r in results if r["price_ksh_int"] > 0]
         
-        if prices:
-            min_p, max_p = min(prices), max(prices)
+        if prices_numeric:
+            min_p, max_p = min(prices_numeric), max(prices_numeric)
             oos_count = sum(1 for r in results if "out" in r["stock"].lower())
             stock_note = "Most listings are in stock." if oos_count == 0 else "Some retailers are out of stock."
             
@@ -444,28 +460,42 @@ if st.button("Generate Marketing Kit", type="primary"):
         price_lines = [l.strip() for l in kit["prices"].splitlines() if l.strip()]
         
         rows = []
-        prices_numeric = []
+        prices_numeric_for_calc = [r["price_ksh_int"] for r in results if r["price_ksh_int"] > 0]
         
+        # 💡 SMART: Add competitor listings
         for i, line in enumerate(price_lines):
             parts = line.split(" - ")
             if len(parts) >= 3:
                 price_str = parts[1]
-                clean = re.sub(r"[^\d]", "", price_str)
-                price_val = int(clean) if clean.isdigit() else 0
-                prices_numeric.append(price_val)
+                # Try to find the matching original result for stock info
+                match = next((r for r in results if r["price_ksh_str"] == price_str), None)
                 
                 rows.append({
                     "Price": price_str,
                     "Retailer": extract_retailer(parts[2]),
                     "Link": " - ".join(parts[2:]),
-                    "Stock": results[i]["stock"] if i < len(results) else "In stock",
-                    "price_val": price_val,
+                    "Stock": match["stock"] if match else "In stock",
+                    "price_val": match["price_ksh_int"] if match else 0,
                     "is_rec": False
                 })
         
-        # Add recommended price
-        if prices_numeric:
-            rec_price = max(prices_numeric) - 500 if max(prices_numeric) > 5000 else max(prices_numeric)
+        # 💡 SMART: Calculate statistically derived recommended price
+        if prices_numeric_for_calc:
+            price_series = pd.Series(prices_numeric_for_calc)
+            
+            # Use 75th percentile as a high-value competitive price base
+            rec_price_base = price_series.quantile(0.75)
+            
+            # Apply a competitive markdown and round to the nearest 100
+            # E.g., 25,937 -> (25,937 - 500) = 25,437 -> round(25,437/100)*100 = 25,400
+            rec_price = int(round((rec_price_base - 500) / 100) * 100)
+            
+            # Fallback check: Ensure the price is not unreasonably low
+            min_comp_price = price_series.min()
+            if rec_price < min_comp_price * 0.90: # If price is more than 10% below lowest competitor, set it competitively close to the lowest.
+                rec_price = int(round((min_comp_price - 100) / 100) * 100)
+            
+            # Add recommended price to the table
             rows.append({
                 "Price": f"KSh {rec_price:,}",
                 "Retailer": "Tripple K (Recommended)",
@@ -494,7 +524,7 @@ if st.button("Generate Marketing Kit", type="primary"):
     
     # Insights
     if kit.get("insights"):
-        with st.expander("Market Insights"):
+        with st.expander("Strategic Market Insights"):
             for line in kit["insights"].splitlines():
                 if line.strip():
                     st.markdown(f"* {line.strip()}")
