@@ -18,15 +18,19 @@ if not GROQ_KEY:
 from groq import Groq
 client = Groq(api_key=GROQ_KEY)
 
-# *** CHANGE IMPLEMENTED HERE ***
-# Only use the requested SearXNG instance
+# *** CONFIG: Failover enabled, but your preferred instance is FIRST. ***
 SEARX_INSTANCES = [
-    "https://searxng-587s.onrender.com/",
+    "https://searxng-587s.onrender.com/", 
+    "https://searx.be/search",
+    "https://search.ononoki.org/search",
+    "https://searxng.site/search",
+    "https://northboot.xyz/search",
 ]
 
 MODEL = "llama-3.1-8b-instant"
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
-RATE_LIMIT = 3
+# *** CONFIG: Rate limit removed ***
+RATE_LIMIT = 0 
 LAST_CALL = 0
 
 BRAND_GREEN = "#4CAF50"
@@ -91,16 +95,17 @@ def warm_up_searx():
     """Ping all SearXNG instances on startup (now just the single one)."""
     def ping_instance(url):
         try:
-            r = requests.get(url, params={"q": "test", "format": "json"}, timeout=8)
+            # Increased timeout for initial ping
+            r = requests.get(url, params={"q": "test", "format": "json"}, timeout=15)
             return url if r.status_code == 200 else None
         except:
             return None
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+    # Check all instances concurrently
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         results = list(executor.map(ping_instance, SEARX_INSTANCES))
     
     online = [r for r in results if r]
-    # Return the single instance if it is online, otherwise an empty list
     return online
 
 
@@ -158,20 +163,15 @@ def validate_image(url: str) -> bool:
 
 
 def fetch_kenyan_prices(phone: str) -> list[dict]:
-    global LAST_CALL
     
     online_instances = warm_up_searx()
     
     if not online_instances:
-        st.error(f"The search API instance ({SEARX_INSTANCES[0]}) is currently unavailable. Please try again later.")
+        st.error(f"All search API instances are currently unavailable. Please check connectivity or try again.")
         return []
 
-    # Since there's only one instance, the loop runs exactly once.
     for instance in online_instances:
-        wait = RATE_LIMIT - (time.time() - LAST_CALL)
-        if wait > 0:
-            time.sleep(wait)
-        LAST_CALL = time.time()
+        # Rate limit removed
         
         try:
             r = requests.get(
@@ -183,7 +183,8 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                     "safesearch": "0"
                 },
                 headers=HEADERS,
-                timeout=25
+                # *** CONFIG: Increased timeout to 45 seconds ***
+                timeout=45 
             )
             
             if r.status_code == 200:
@@ -242,11 +243,11 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                 return enriched
                 
         except Exception as e:
-            # Report the failure for the only instance
-            st.error(f"Search failed for {instance}. Error: {e}")
-            return []
+            # If the current instance fails, try the next one (failover logic)
+            st.sidebar.warning(f"Search failed for {instance}. Trying next available search engine...")
+            continue
     
-    return []
+    return [] # Returns empty list if all instances fail or return no data
 
 
 def generate_with_data(phone: str, results: list[dict], persona: str, tone: str) -> dict:
@@ -506,7 +507,6 @@ inject_brand_css()
 # Sidebar
 with st.sidebar:
     st.title("Settings")
-    # Toggling web data is still useful for generic copy flow
     use_web_data = st.toggle("Use live web data", value=True, help="Search Kenyan retailers for prices before generating copy.")
     
     persona = st.selectbox("Target Audience", 
@@ -536,14 +536,14 @@ if st.button("Search Kenyan Prices", type="primary"):
         st.error("Please enter a phone model")
     else:
         st.session_state['phone'] = phone_input
-        st.session_state['kit'] = None # Clear previous kit
+        st.session_state['kit'] = None 
         
-        with st.status("Searching Kenyan retailers...", expanded=True) as status:
+        with st.status("Searching Kenyan retailers (max 45s wait on primary instance)...", expanded=True) as status:
             if use_web_data:
                 results = fetch_kenyan_prices(phone_input)
                 
                 if not results:
-                    st.warning("No relevant Kenyan web data found or search API is down. Proceed with generic copy if needed.")
+                    st.warning("No relevant Kenyan web data found. The primary search API might be down.")
                 else:
                     st.write(f"Found {len(results)} relevant Kenyan listings")
             else:
