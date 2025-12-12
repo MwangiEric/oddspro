@@ -352,7 +352,7 @@ if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
             social["IG"] = line.split(":", 1)[1].strip()
         elif "FB:" in line:
             social["FB"] = line.split(":", 1)[1].strip()
-        elif "WHATSAPP:" in line or "WhatsApp:" in line:
+        elif "WHATSAPP:" in line or re.search(r"(?i)whatsapp:\s*(.+)", lines) in line:
             social["WhatsApp"] = line.split(":", 1)[1].strip()
         elif line.startswith("#"):
             hashtags = line
