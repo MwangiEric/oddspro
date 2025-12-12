@@ -18,13 +18,10 @@ if not GROQ_KEY:
 from groq import Groq
 client = Groq(api_key=GROQ_KEY)
 
-# Use the validated list from the snippet for better stability
+# *** CHANGE IMPLEMENTED HERE ***
+# Only use the requested SearXNG instance
 SEARX_INSTANCES = [
     "https://searxng-587s.onrender.com/",
-    "https://searx.be/search",
-    "https://search.ononoki.org/search",
-    "https://searxng.site/search",
-    "https://northboot.xyz/search", # Added for redundancy
 ]
 
 MODEL = "llama-3.1-8b-instant"
@@ -91,7 +88,7 @@ def inject_brand_css():
 
 @st.cache_resource
 def warm_up_searx():
-    """Ping all SearXNG instances on startup"""
+    """Ping all SearXNG instances on startup (now just the single one)."""
     def ping_instance(url):
         try:
             r = requests.get(url, params={"q": "test", "format": "json"}, timeout=8)
@@ -99,11 +96,12 @@ def warm_up_searx():
         except:
             return None
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         results = list(executor.map(ping_instance, SEARX_INSTANCES))
     
     online = [r for r in results if r]
-    return online if online else SEARX_INSTANCES
+    # Return the single instance if it is online, otherwise an empty list
+    return online
 
 
 def extract_retailer(url: str) -> str:
@@ -165,9 +163,10 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
     online_instances = warm_up_searx()
     
     if not online_instances:
-        st.error("All search API instances are currently unavailable. Please try again later.")
+        st.error(f"The search API instance ({SEARX_INSTANCES[0]}) is currently unavailable. Please try again later.")
         return []
 
+    # Since there's only one instance, the loop runs exactly once.
     for instance in online_instances:
         wait = RATE_LIMIT - (time.time() - LAST_CALL)
         if wait > 0:
@@ -243,8 +242,9 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                 return enriched
                 
         except Exception as e:
-            st.sidebar.warning(f"Failed to connect to {instance} (Error: {e}). Trying backup search engine...")
-            continue
+            # Report the failure for the only instance
+            st.error(f"Search failed for {instance}. Error: {e}")
+            return []
     
     return []
 
@@ -442,11 +442,13 @@ def render_price_table(results: list[dict]):
     # 3. Sort and create DataFrame
     rows.sort(key=lambda x: x["price_val"], reverse=True)
     
+    # Prepare data for st.dataframe
     df = pd.DataFrame([{
         "Price": r["Price"],
         "Retailer": r["Retailer"],
         "Stock": r["Stock"],
-        "Link": f"[View Link]({r['Link']})" if r['Link'].startswith('http') else "N/A" # Format link for dataframe
+        # Use Markdown links in a helper column for a clickable link in the dataframe
+        "Link": f"[View Link]({r['Link']})" if r['Link'].startswith('http') else "N/A"
     } for r in rows])
 
     # 4. Render
@@ -454,37 +456,28 @@ def render_price_table(results: list[dict]):
         df,
         use_container_width=True,
         hide_index=True,
-        # Display the DataFrame
     )
 
 
 def parse_and_render_copy(copy_block: str, phone: str):
     """Parses the copy block robustly and renders the UI sections."""
     
-    # Define keywords
     markers = ["BANNERS:", "TIKTOK:", "IG:", "FB:", "WHATSAPP:", "HASHTAGS:"]
     social_data = {}
     banners = []
     hashtags = ""
     
-    # Split the block by markers (using re.IGNORECASE for robustness)
     parts = re.split(f'({"|".join(markers)})', copy_block, flags=re.IGNORECASE)
-    
-    # Initialize current content to parts[0] (content before the first marker, often empty)
-    # The split results in [content_before, marker, content_after, marker, content_after, ...]
     
     for i in range(1, len(parts), 2):
         marker = parts[i].upper().strip(':')
         content = parts[i+1].strip()
         
         if marker == "BANNERS":
-            # Banners are expected to be 2 lines
             banners = [l.strip() for l in content.splitlines() if l.strip()][:2]
         elif marker == "HASHTAGS":
-            # Hashtags are typically the last line(s)
             hashtags = content.splitlines()[-1].strip() if content else ""
         elif marker in ("TIKTOK", "IG", "FB", "WHATSAPP"):
-            # Map marker to display name and store content
             key = marker.capitalize() if marker != "WHATSAPP" else "WhatsApp"
             social_data[key] = content
 
@@ -500,7 +493,6 @@ def parse_and_render_copy(copy_block: str, phone: str):
     
     with c2:
         st.markdown("**Social Media Copy**")
-        # Ensure all social media keys are present, even if empty
         st.text_area("TikTok", social_data.get("TikTok", ""), height=60, key="tt")
         st.text_area("Instagram", social_data.get("IG", ""), height=70, key="ig")
         st.text_area("Facebook", social_data.get("FB", ""), height=70, key="fb")
@@ -514,6 +506,7 @@ inject_brand_css()
 # Sidebar
 with st.sidebar:
     st.title("Settings")
+    # Toggling web data is still useful for generic copy flow
     use_web_data = st.toggle("Use live web data", value=True, help="Search Kenyan retailers for prices before generating copy.")
     
     persona = st.selectbox("Target Audience", 
@@ -550,7 +543,7 @@ if st.button("Search Kenyan Prices", type="primary"):
                 results = fetch_kenyan_prices(phone_input)
                 
                 if not results:
-                    st.warning("No relevant Kenyan web data found. Proceed with generic copy if needed.")
+                    st.warning("No relevant Kenyan web data found or search API is down. Proceed with generic copy if needed.")
                 else:
                     st.write(f"Found {len(results)} relevant Kenyan listings")
             else:
@@ -560,13 +553,11 @@ if st.button("Search Kenyan Prices", type="primary"):
             st.session_state['results'] = results
             status.update(label="Search Complete!", state="complete", expanded=False)
             
-            # Rerun to jump to the next stage in the UI immediately
             st.rerun() 
 
 
 # Display results if available
 if st.session_state['results'] or st.session_state['kit']:
-    # Use the phone from session state
     phone = st.session_state.get('phone', phone_input)
     st.markdown(f"## {phone} - Market Analysis")
     
@@ -588,8 +579,6 @@ if st.session_state['results'] or st.session_state['kit']:
     
     # --- STAGE 2: GENERATE COPY ---
     st.subheader("Generate Ad Copy")
-    
-    # Use the phone stored in session state
     
     col1, col2 = st.columns(2)
     
