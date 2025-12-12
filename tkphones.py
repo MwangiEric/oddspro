@@ -169,7 +169,6 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                     })
                 
                 all_results.extend(enriched)
-                st.cache_data.clear()  # Fresh data
                 return enriched
                 
         except Exception:
@@ -277,7 +276,7 @@ if st.button("🚀 Generate Marketing Kit", type="primary"):
             st.stop()
 
     # Price Analysis
-    prices = [int(re.sub(r'[^\d]', '', p)) for r in results if r['price_ksh']]
+    prices = [int(re.sub(r'[^\d]', '', p)) for r in results if (r['price_ksh'] and r['price_ksh'].isdigit())]
     if prices:
         min_p, max_p, avg_p = min(prices), max(prices), round(sum(prices)/len(prices))
         col1, col2, col3 = st.columns(3)
@@ -288,7 +287,7 @@ if st.button("🚀 Generate Marketing Kit", type="primary"):
         rec_price = max_p - 800 if max_p > 10000 else max_p
         st.success(f"✅ **Tripple K Price:** KSh {rec_price:,}")
 
-    # Market Prices Table
+    # Market Prices Table - FIXED
     if kit.get("prices"):
         st.subheader("🏪 Market Prices")
         table_data = []
@@ -296,11 +295,14 @@ if st.button("🚀 Generate Marketing Kit", type="primary"):
             parts = re.split(r'\s*-\s*', line.strip(), maxsplit=2)
             if len(parts) >= 2:
                 retailer = extract_retailer(parts[-1]) if len(parts) > 2 else "Online"
+                price_text = parts[1] if len(parts) > 1 else ""
+                link_url = parts[-1] if len(parts) > 2 else line
+                
                 table_data.append({
                     "Retailer": retailer,
-                    "Price": parts[1] if len(parts) > 1 else "",
+                    "Price": price_text,
                     "Stock": "✅",
-                    "Link": parts[-1] if len(parts) > 2 else line
+                    "🔗": link_url  # Simple column name
                 })
         
         df = pd.DataFrame(table_data)
@@ -308,8 +310,7 @@ if st.button("🚀 Generate Marketing Kit", type="primary"):
             df,
             use_container_width=True,
             column_config={
-                "Link": st.column_config.LinkColumn("🔗 Visit", open_in_new_tab=True),
-                "Price": st.column_config.TextColumn("💰 Price")
+                "🔗": st.column_config.LinkColumn("Visit")
             },
             hide_index=True
         )
