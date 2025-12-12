@@ -22,10 +22,7 @@ client = Groq(api_key=GROQ_KEY)
 
 # SearXNG instances (trimmed)
 SEARX_INSTANCES = [
-    "https://searx.be/search",
-    "https://search.ononoki.org/search",
-    "https://searxng.site/search",
-    "https://northboot.xyz/search"
+    "https://searxng-587s.onrender.com/search"
 ]
 
 MODEL = "llama-3.1-8b-instant"
