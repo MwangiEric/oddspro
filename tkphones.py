@@ -255,13 +255,13 @@ RULES:
 
 ############################ STREAMLIT UI ####################################
 inject_brand_css()
-st.title("ðŸ"± Tripple K Phone Ad Generator")
+st.title("± Tripple K Phone Ad Generator")
 st.caption("Data-Driven Marketing Kits | www.tripplek.co.ke")
 
 if is_christmas:
     st.info("ðŸŽ„ Christmas Special: Generate festive ads with warranty & delivery highlights!")
 
-phone = st.text_input("ðŸ" Phone model", value="Samsung Galaxy A17", placeholder="e.g., Xiaomi Poco X6 Pro")
+phone = st.text_input(" Phone model", value="Samsung Galaxy A17", placeholder="e.g., Xiaomi Poco X6 Pro")
 persona = st.selectbox("ðŸ'¤ Target Audience", 
     ["All Kenyan buyers", "Budget students", "Tech-savvy pros", "Camera creators", "Business execs"],
     index=0)
@@ -270,7 +270,7 @@ tone = st.selectbox("ðŸŽ¨ Brand Tone",
     index=0)
 
 if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
-    with st.status("ðŸ" Fetching Kenyan market data...", expanded=True) as status:
+    with st.status(" Fetching Kenyan market data...", expanded=True) as status:
         st.write("ðŸŒ Searching multiple sources...")
         results = fetch_kenyan_prices(phone)
         
@@ -326,18 +326,18 @@ if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
     
     # Specs
     if kit["specs"]:
-        st.subheader("ðŸ"± Key Specs")
+        st.subheader("± Key Specs")
         st.text(kit["specs"])
     
     # Insights
     if kit["insights"]:
-        with st.expander("ðŸ"ˆ Market Insights"):
+        with st.expander(" Market Insights"):
             for line in kit["insights"].splitlines():
                 if line.strip():
                     st.markdown(f"- {line.strip()}")
     
     # Copy
-    st.subheader("ðŸ"£ Ready-to-Use Copy")
+    st.subheader(" Ready-to-Use Copy")
     
     lines = [l.strip() for l in kit["copy"].splitlines() if l.strip()]
     banners, social, hashtags = [], {}, ""
@@ -366,7 +366,7 @@ if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
             st.code(b, language="text")
     
     with c2:
-        st.markdown("**ðŸ"² Social Media**")
+        st.markdown(" Social Media")
         st.text_area("TikTok", social.get("TikTok", ""), height=60, key="tt")
         st.text_area("Instagram", social.get("IG", ""), height=70, key="ig")
         st.text_area("Facebook", social.get("FB", ""), height=70, key="fb")
