@@ -170,7 +170,7 @@ def generate_marketing_kit(phone: str, results: list[dict], persona: str, tone: 
     web_context = "\n".join(context_lines) if context_lines else "No market data available."
     
     # Groq prompt
-    prompt = f"""You are the marketing AI for **Tripple K Communications** (www.tripplek.co.ke).
+    prompt = f"""You are the marketing expert and social media manager for **Tripple K Communications** (www.tripplek.co.ke).
 
 TRIPPLE K VALUE PROPS (mention 1-2):
 … Accredited distributor - only genuine phones
@@ -178,7 +178,7 @@ TRIPPLE K VALUE PROPS (mention 1-2):
 … Pay on delivery available
 … Fast Nairobi delivery
 
-{"ðŸŽ„ CHRISTMAS SEASON: Perfect gift with warranty & fast delivery!" if is_christmas else ""}
+{" CHRISTMAS SEASON: Perfect gift with warranty & fast delivery!" if is_christmas else ""}
 
 PHONE: {phone}
 PERSONA: {persona}
@@ -196,24 +196,24 @@ For each result with price: "Retailer - KSh X,XXX - URL"
 List 5-10 key specs from data (battery, RAM, camera, storage, display)
 
 ---INSIGHTS---
-3-5 short bullet points:
+3-5 short bullet  top points with bried explanation:
 - What market emphasizes
 - Price range & stock trends
-- Why buy from Tripple K (warranty, genuine, delivery)
 
----COPY---
+---Social Media COPY---
 BANNERS: 2 lines, max 40 chars each, include "Tripple K"
 TIKTOK: 1 line, <100 chars, fun hook with emoji if Playful
 IG: 2-3 sentences, benefit-focused
 FB: Similar to IG
 WHATSAPP: Include phone {TRIPPLEK_PHONE}, warranty, pay on delivery
-HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE
+HASHTAGS: have hashtags like #TrippleK #TrippleKKE #PhoneDealsKE
 
 RULES:
 - Plain text only
-- Use real data only
+- Use real data only for price market insights. If no data available generate ad copy.
+- Always generate ad copy using phone name
 - Don't mention competitor names
-- Focus on trust & value"""
+- Focus on trust & value - Why buy from Tripple K warranty, genuine, delivery"""
 
     try:
         completion = client.chat.completions.create(
@@ -259,13 +259,13 @@ st.title("± Tripple K Phone Ad Generator")
 st.caption("Data-Driven Marketing Kits | www.tripplek.co.ke")
 
 if is_christmas:
-    st.info("ðŸŽ„ Christmas Special: Generate festive ads with warranty & delivery highlights!")
+    st.info(" Christmas Special: Generate festive ads with warranty & delivery highlights!")
 
 phone = st.text_input(" Phone model", value="Samsung Galaxy A17", placeholder="e.g., Xiaomi Poco X6 Pro")
 persona = st.selectbox("ðŸ'¤ Target Audience", 
     ["All Kenyan buyers", "Budget students", "Tech-savvy pros", "Camera creators", "Business execs"],
     index=0)
-tone = st.selectbox("ðŸŽ¨ Brand Tone", 
+tone = st.selectbox("¨ Brand Tone", 
     ["Playful", "Rational", "Luxury", "FOMO"],
     index=0)
 
