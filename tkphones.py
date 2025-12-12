@@ -16,12 +16,7 @@ if not GROQ_KEY:
 from groq import Groq
 client = Groq(api_key=GROQ_KEY)
 
-# SearXNG instances - add more for redundancy
-SEARX_INSTANCES = [
-    "https://searx.be/search",
-    "https://search.ononoki.org/search",
-    "https://searxng.site/search",
-]
+SEARX_URL = "https://searxng-587s.onrender.com/search"
 MODEL = "llama-3.1-8b-instant"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
@@ -35,7 +30,7 @@ BRAND_MAROON = "#8B0000"
 BACKGROUND_LIGHT = "#F9FAF8"
 DEFAULT_TONE = "Playful"
 
-# Tripple K contact (hardcoded, not secret)
+# Tripple K contact
 TRIPPLEK_PHONE = "+254700123456"
 
 # Seasonal hook
@@ -47,15 +42,19 @@ CHRISTMAS_HOOK = "🎄 Christmas Special! Perfect gift with fast delivery & warr
 #####################################################################
 # --- WAKE UP SEARX ON START ---
 @st.cache_resource
-def warm_up_searx(url):
+def warm_up_searx():
     try:
-        requests.get(url, params={"q": "test", "format": "json"}, timeout=10)
+        requests.get(SEARX_URL, params={"q": "test", "format": "json"}, timeout=10)
+        st.success("✅ SearXNG instance warmed up!")
         return True
     except:
-        return False  # Indicate failure to warm up
+        st.warning("⚠️ Failed to warm up SearXNG instance.")
+        return False
 
 
-# --- CSS ---
+warm_up_searx()
+
+
 def inject_brand_css():
     st.markdown(f"""
     <style>
@@ -102,15 +101,6 @@ def inject_brand_css():
     """, unsafe_allow_html=True)
 
 
-# --- Helper Functions ---
-def extract_retailer_simple(url: str) -> str:
-    if not url:
-        return "unknown"
-    domain = urlparse(url).netloc.lower()
-    domain = re.sub(r"^(www|m|mobile|shop)\\.", "", domain)
-    return domain.split(".")[0]
-
-
 def extract_ksh_prices(results: list[dict]) -> list[int]:
     prices = []
     for r in results:
@@ -129,6 +119,7 @@ def recommend_price_and_summary(phone: str, results: list[dict]) -> tuple[str, s
         price_stats["min"] = min(prices)
         price_stats["max"] = max(prices)
         price_stats["avg"] = round(sum(prices) / len(prices))
+        # Recommend: slightly below max if stock is good, else near avg
         oos_count = sum(1 for r in results if "Out of stock" in r.get("stock", ""))
         if oos_count / len(results) > 0.5:
             rec = price_stats["avg"]
@@ -138,6 +129,7 @@ def recommend_price_and_summary(phone: str, results: list[dict]) -> tuple[str, s
             just = f"Most retailers are in stock. Price just below the market high (KSh {price_stats['max']:,}) to attract value-conscious buyers while maintaining margin."
         price_stats["rec"] = rec
         price_stats["justification"] = just
+        # Build 2-sentence summary
         low = f"KSh {price_stats['min']:,}"
         high = f"KSh {price_stats['max']:,}"
         stock_note = "Most listings are in stock." if oos_count == 0 else (
@@ -145,6 +137,7 @@ def recommend_price_and_summary(phone: str, results: list[dict]) -> tuple[str, s
         summary_parts.append(f"Kenyan prices for the {phone} range from {low} to {high}. {stock_note}")
     else:
         summary_parts.append(f"No clear pricing data found for {phone} in Kenya yet.")
+    # Auto-recommend persona & tone (simple heuristic)
     if prices:
         avg = price_stats["avg"]
         if avg < 15000:
@@ -163,6 +156,14 @@ def recommend_price_and_summary(phone: str, results: list[dict]) -> tuple[str, s
     else:
         summary_parts.append("💡 Tripple K Tip: Gather more market data before deciding on audience.")
     return "\n".join(summary_parts), f"**Recommended Price: KSh {price_stats['rec']:,}**" if price_stats["rec"] else "", price_stats
+
+
+def extract_retailer_simple(url: str) -> str:
+    if not url:
+        return "unknown"
+    domain = urlparse(url).netloc.lower()
+    domain = re.sub(r"^(www|m|mobile|shop)\\.", "", domain)
+    return domain.split(".")[0]
 
 
 def is_tripplek_url(url: str) -> bool:
@@ -208,62 +209,57 @@ def is_image_valid(img_url: str) -> bool:
         return False
 
 
-def get_searx_results(phone: str, url: str) -> list[dict]:
-    global LAST_CALL
-    wait = RATE_LIMIT - (time.time() - LAST_CALL)
-    if wait > 0:
-        time.sleep(wait)
-    LAST_CALL = time.time()
-    try:
-        r = requests.get(url,
-                         params={"q": f'"{phone}" price Kenya', "format": "json", "language": "en", "safesearch": "0"},
-                         headers=HEADERS,
-                         timeout=20, )
-        r.raise_for_status()
-        raw = r.json().get("results", [])
-        enriched = []
-        for res in raw[:60]:
-            title = res.get("title", "")
-            content = res.get("content", "")
-            url = res.get("url", "")
-            full_text = f"{title} {content} {url}".lower()
-            price_match = re.search(
-                r'(?:ksh?|kes|shillings?)\\s*[:\\-]?\\s*(\\d{{3,}}(?:,\\d{{3}})*)(?!\\s*(?:gb|mb|gbp|usd|eur))',
-                full_text, re.IGNORECASE)
-            price = f"KSh {price_match.group(1)}" if price_match else None
-            stock = "✅ In stock"
-            text_lower = (title + " " + content).lower()
-            if any(w in text_lower for w in ["out of stock", "sold out", "unavailable"]):
-                stock = "❌ Out of stock"
-            elif any(w in text_lower for w in ["limited stock", "few left", "hurry"]):
-                stock = "⚠️ Limited stock"
-            enriched.append({"title": title[:180], "url": url, "content": content[:300], "price_ksh": price,
-                             "stock": stock, })
-        return enriched
-    except Exception as e:
-        st.warning(f"⚠️ Error fetching from {url}: {e}")
-        return []
-
-
 def searx_all_results(phone: str) -> list[dict]:
-    all_results = []
-    for url in SEARX_INSTANCES:
-        st.write(f"🌐 Trying SearXNG instance: {url}")
-        results = get_searx_results(phone, url)
-        if results:
-            st.success(f"✅ Successfully fetched results from {url}")
-            all_results = results
-            break  # Stop on first successful instance
-        else:
-            st.warning(f"❌ Failed to get results from {url}")
-    return all_results
+    global LAST_CALL
+    max_retries = 3
+    retry_wait = 5
+    for attempt in range(1, max_retries + 1):
+        wait = RATE_LIMIT - (time.time() - LAST_CALL)
+        if wait > 0:
+            time.sleep(wait)
+        LAST_CALL = time.time()
+        try:
+            r = requests.get(SEARX_URL,
+                             params={"q": f'"{phone}" price Kenya', "format": "json", "language": "en",
+                                     "safesearch": "0"},
+                             headers=HEADERS,
+                             timeout=20, )
+            r.raise_for_status()
+            raw = r.json().get("results", [])
+            enriched = []
+            for i, res in enumerate(raw, 1):
+                title = res.get("title", "")
+                content = res.get("content", "")
+                url = res.get("url", "")
+                full_text = f"{title} {content} {url}".lower()
+                price_match = re.search(
+                    r'(?:ksh?|kes|shillings?)\\s*[:\\-]?\\s*(\\d{3,}(?:,\\d{3})*)(?!\\s*(?:gb|mb|gbp|usd|eur))',
+                    full_text, re.IGNORECASE)
+                price = f"KSh {price_match.group(1)}" if price_match else None
+                stock = "✅ In stock"
+                text_lower = (title + " " + content).lower()
+                if any(w in text_lower for w in ["out of stock", "sold out", "unavailable"]):
+                    stock = "❌ Out of stock"
+                elif any(w in text_lower for w in ["limited stock", "few left", "hurry"]):
+                    stock = "⚠️ Limited stock"
+                enriched.append({"title": title[:180], "url": url, "content": content[:300], "price_ksh": price,
+                                 "stock": stock, })
+            return enriched
+        except Exception as e:
+            if attempt < max_retries:
+                st.warning(f"⚠️ Server is starting... (attempt {attempt}/{max_retries}). Retrying in {retry_wait}s.")
+                time.sleep(retry_wait)
+            else:
+                st.error("❌ SearX failed after 3 attempts. No live data available.")
+            return []
+    return []
 
 
 def build_groq_context(results: list[dict]) -> str:
     lines = []
     for r in results:
         price = f" | {r['price_ksh']}" if r["price_ksh"] else ""
-        lines.append(f"Title: {r['title']}{price}\nURL: {r['url']}\nSnippet: {r['content']}\nStock: {r['stock']}\n---")
+        lines.append(f"Title: {r['title']}{price}\\nURL: {r['url']}\\nSnippet: {r['content']}\\nStock: {r['stock']}\\n---")
     return "\n".join(lines) if lines else "No results found."
 
 
@@ -292,7 +288,7 @@ def generate_marketing_with_data(phone: str, web_context: str, persona: str, ton
     - Accredited distributor of original brands
     - Full manufacturer warranty
     - Pay on delivery available
-    {CHRISTMAS_HOOK} if {CHRISTMAS_HOOK}
+    {CHRISTMAS_HOOK}
     INPUT:
     PHONE: {phone}
     TARGET PERSONA: {persona}
@@ -323,16 +319,24 @@ def generate_marketing_with_data(phone: str, web_context: str, persona: str, ton
         return "", "", "", ""
 
 
-def generate_marketing_without_data(phone: str, persona: str, tone: str) -> tuple:
-    prompt = f"""You are a marketing expert for **Tripple K Communications** in Kenya.
-    Create realistic, helpful content for:
-    PHONE: {phone}
-    TARGET PERSONA: {persona}
-    TONE: {tone}
-    Tripple K VALUE PROPS (ALWAYS INCLUDE):
-    - Accredited distributor of original brands
-    - Full manufacturer warranty
-    - Pay on delivery available
-    {f"- {CHRISTMAS_HOOK}" if CHRISTMAS_HOOK else ""}
-    DO NOT invent prices, retailers, or fake specs. Focus on general benefits, brand trust, and call-to-action.
-    RETURN ONLY this
+############################ STREAMLIT UI ####################################
+inject_brand_css()
+st.title("📱 Tripple K Phone Ad Generator")
+st.caption("Flyer-Ready Marketing Kits | www.tripplek.co.ke")
+phone = st.text_input("🔍 Phone model (e.g., Xiaomi Poco X6 Pro)", value="Xiaomi Poco X6 Pro")
+persona = st.selectbox("👤 Buyer Persona",
+                       ["All Kenyan buyers", "Budget students", "Tech-savvy pros", "Camera creators", "Status execs"],
+                       index=0)
+tone = st.selectbox("🎨 Brand Tone", ["Playful", "Rational", "Luxury", "FOMO"], index=0)
+
+if st.button("🚀 Generate Tripple K Marketing Kit", type="primary"):
+    fetch_date = datetime.now().strftime("%d %b %Y at %H:%M EAT")
+    with st.status("🔍 Fetching live Kenyan market data...", expanded=True) as status:
+        st.write("🌐 Waking up SearXNG and fetching offers...")
+        web_results = searx_all_results(phone)
+        searx_success = len(web_results) > 0
+
+        if searx_success:
+            web_context = build_groq_context(web_results)
+            st.write("🧠 Generating data-backed marketing kit...")
+            price_block, specs_
