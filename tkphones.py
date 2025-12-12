@@ -18,6 +18,7 @@ client = Groq(api_key=GROQ_KEY)
 
 # Multiple SearXNG instances for failover
 SEARX_INSTANCES = [
+    "https://searxng-587s.onrender.com/search",
     "https://searx.be/search",
     "https://search.ononoki.org/search",
     "https://searxng.site/search",
@@ -260,7 +261,7 @@ st.caption("Data-Driven Marketing Kits | www.tripplek.co.ke")
 if is_christmas:
     st.info("ðŸŽ„ Christmas Special: Generate festive ads with warranty & delivery highlights!")
 
-phone = st.text_input("ðŸ" Phone model", value="Samsung Galaxy A17", placeholder="e.g., Xiaomi Poco X6 Pro")
+phone = st.text_input("Phone model", value="Samsung Galaxy A17", placeholder="e.g., Xiaomi Poco X6 Pro")
 persona = st.selectbox("ðŸ'¤ Target Audience", 
     ["All Kenyan buyers", "Budget students", "Tech-savvy pros", "Camera creators", "Business execs"],
     index=0)
