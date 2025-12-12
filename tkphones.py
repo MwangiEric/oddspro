@@ -113,7 +113,7 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
             )
             
             if r.status_code == 200:
-                results = r.json().get("results", [])[:60]
+                results = r.json().get("results", [])[:100]
                 
                 enriched = []
                 for res in results:
@@ -138,9 +138,9 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                         stock = "âš ï¸ Limited stock"
                     
                     enriched.append({
-                        "title": title[:180],
+                        "title": title,
                         "url": url,
-                        "content": content[:300],
+                        "content": content,
                         "price_ksh": price,
                         "stock": stock
                     })
