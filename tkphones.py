@@ -270,7 +270,7 @@ tone = st.selectbox("ðŸŽ¨ Brand Tone",
     index=0)
 
 if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
-    with st.status("ðŸ" Fetching Kenyan market data...", expanded=True) as status:
+    with st.status(" Fetching Kenyan market data...", expanded=True) as status:
         st.write("ðŸŒ Searching multiple sources...")
         results = fetch_kenyan_prices(phone)
         
@@ -331,13 +331,13 @@ if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
     
     # Insights
     if kit["insights"]:
-        with st.expander("ðŸ"ˆ Market Insights"):
+        with st.expander("ˆ Market Insights"):
             for line in kit["insights"].splitlines():
                 if line.strip():
                     st.markdown(f"- {line.strip()}")
     
     # Copy
-    st.subheader("ðŸ"£ Ready-to-Use Copy")
+    st.subheader("£ Ready-to-Use Copy")
     
     lines = [l.strip() for l in kit["copy"].splitlines() if l.strip()]
     banners, social, hashtags = [], {}, ""
@@ -366,7 +366,7 @@ if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
             st.code(b, language="text")
     
     with c2:
-        st.markdown("**ðŸ"² Social Media**")
+        st.markdown("**² Social Media**")
         st.text_area("TikTok", social.get("TikTok", ""), height=60, key="tt")
         st.text_area("Instagram", social.get("IG", ""), height=70, key="ig")
         st.text_area("Facebook", social.get("FB", ""), height=70, key="fb")
