@@ -262,7 +262,7 @@ TASK — Return EXACTLY these 4 sections:
    - Opportunities for Tripple K?
    - Keep as clear lines or short paragraphs.
 
-4. COPY (must use real  price, specs, stock, tone, persona):
+4. Create social media posts, banners uing the market insights tone, persona:
    - BANNERS: 2 lines (≤40 chars), include store name
    - TIKTOK: 1 short, engaging line (<100 chars)
    - IG / FB: Slightly longer, benefit-driven
