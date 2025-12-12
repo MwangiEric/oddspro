@@ -43,6 +43,15 @@ CURRENT_MONTH = f'{now.month:02d}'
 ####################################################################
 
 
+# Initialize session state for multi-stage workflow
+if 'results' not in st.session_state:
+    st.session_state['results'] = []
+if 'kit' not in st.session_state:
+    st.session_state['kit'] = None
+if 'phone' not in st.session_state:
+    st.session_state['phone'] = ""
+
+
 def inject_brand_css():
     st.markdown(f"""
     <style>
@@ -64,12 +73,13 @@ def inject_brand_css():
         background-color: {BRAND_GREEN} !important;
         color: white !important;
     }}
-    .main {{
-        background-color: {BACKGROUND_LIGHT};
-    }}
-    .recommended-price {{
+    /* Custom style for the recommended price row - requires Styler or markdown rendering */
+    .dataframe tr.recommended-row td {{
         background-color: #E8F5E9 !important;
         font-weight: bold;
+    }}
+    .main {{
+        background-color: {BACKGROUND_LIGHT};
     }}
     @media (max-width: 768px) {{
         .stTextArea textarea, .stCodeBlock {{
@@ -119,7 +129,6 @@ def predict_image_url(phone: str, url: str) -> str:
     """Uses Groq to predict likely product image URL with dynamic date."""
     slug = extract_slug_from_url(url)
     
-    # Inject current year and month for more accurate WooCommerce/WP path prediction
     prompt = f"""Product: {phone}
 URL: {url}
 Slug: {slug}
@@ -168,7 +177,6 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
             r = requests.get(
                 instance,
                 params={
-                    # Retain localization query
                     "q": f'"{phone}" price Kenya',
                     "format": "json",
                     "language": "en",
@@ -254,7 +262,6 @@ def generate_with_data(phone: str, results: list[dict], persona: str, tone: str)
         )
     web_context = "\n".join(context_lines) if context_lines else "No data"
     
-    # 💡 FIX: Make prompt stricter and reduce temperature to improve format adherence
     prompt = f"""You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
 
 TRIPPLE K VALUE PROPS (mention in copy):
@@ -269,13 +276,13 @@ PHONE: {phone}
 PERSONA: {persona}
 TONE: {tone}
 
-MARKET DATA:
+MARKET DATA (Use this for facts, specs, and price comparison):
 {web_context}
 
 OUTPUT EXACTLY 4 SECTIONS, each starting with the required marker:
 
 ---PRICE---
-List: "Retailer - KSh X,XXX - URL" for each result with price. Include the retailer name from the context.
+List: "Retailer - KSh X,XXX - URL" for each price result. Include the retailer name from the context.
 
 ---SPECS---
 5-10 key specs from data or general knowledge
@@ -297,7 +304,7 @@ Plain text only. Use real data."""
         comp = client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.5, # Lowered temperature for structured output
+            temperature=0.5, 
             max_tokens=2400,
             timeout=50
         )
@@ -306,7 +313,6 @@ Plain text only. Use real data."""
         
         parts = raw.split("---PRICE---")
         if len(parts) < 2:
-            # Added more context to the error message
             return {"error": f"Invalid format from AI. Missing ---PRICE--- marker in output: \n{raw[:500]}..."}
         
         rest = parts[1]
@@ -349,7 +355,8 @@ TRIPPLE K VALUE PROPS:
 
 DO NOT invent prices or fake specs. Focus on benefits and trust.
 
-OUTPUT:
+OUTPUT EXACTLY 2 SECTIONS, each starting with the required marker:
+
 ---SPECS---
 General expected specs for this phone model (if known)
 
@@ -379,7 +386,8 @@ Plain text only."""
         
         if "---SPECS---" in raw:
             parts = raw.split("---SPECS---", 1)[1]
-            specs_block = parts.split("---COPY---")[0].strip() if "---COPY---" in parts else ""
+            # Handle the case where the AI might include ---COPY--- immediately
+            specs_block = parts.split("---COPY---")[0].strip() if "---COPY---" in parts else parts.strip()
             copy_block = parts.split("---COPY---", 1)[1].strip() if "---COPY---" in parts else ""
         
         return {
@@ -393,13 +401,132 @@ Plain text only."""
         return {"error": str(e)}
 
 
+def render_price_table(results: list[dict]):
+    """Renders the price comparison table with Tripple K's recommended price."""
+    
+    rows = []
+    # Filter for valid numeric prices
+    prices_numeric_for_calc = [r["price_ksh_int"] for r in results if r["price_ksh_int"] > 0]
+    
+    # Add competitor listings
+    for r in results:
+        if r["price_ksh_int"] > 0:
+            rows.append({
+                "Price": r["price_ksh_str"],
+                "Retailer": r["retailer"],
+                "Link": r["url"],
+                "Stock": r["stock"],
+                "price_val": r["price_ksh_int"],
+                "is_rec": False
+            })
+
+    # Calculate statistically derived recommended price
+    rec_price = 0
+    if prices_numeric_for_calc:
+        price_series = pd.Series(prices_numeric_for_calc)
+        
+        rec_price_base = price_series.quantile(0.75)
+        rec_price = int(round((rec_price_base - 500) / 100) * 100)
+        
+        min_comp_price = price_series.min()
+        if rec_price < min_comp_price * 0.90: 
+            rec_price = int(round((min_comp_price - 100) / 100) * 100)
+        
+        # Add recommended price to the table
+        rows.append({
+            "Price": f"KSh {rec_price:,}",
+            "Retailer": "Tripple K (Recommended)",
+            "Link": "https://www.tripplek.co.ke",
+            "Stock": "Available",
+            "price_val": rec_price,
+            "is_rec": True
+        })
+    
+    # Sort by price high to low
+    rows.sort(key=lambda x: x["price_val"], reverse=True)
+    
+    # Create DataFrame
+    df = pd.DataFrame([{
+        "Price": r["Price"],
+        "Retailer": r["Retailer"],
+        "Link": r["Link"],
+        "Stock": r["Stock"]
+    } for r in rows])
+
+    # Custom styling function (limited effectiveness in st.dataframe without st.experimental_data_editor)
+    # Using a simple HTML table for guaranteed style, as st.dataframe styling is limited
+    html = '<table class="dataframe"><thead><tr>'
+    for col in df.columns:
+        html += f'<th>{col}</th>'
+    html += '</tr></thead><tbody>'
+    
+    for _, row in df.iterrows():
+        is_rec = next((r["is_rec"] for r in rows if r["Price"] == row["Price"] and r["Retailer"] == row["Retailer"]), False)
+        row_class = 'recommended-row' if is_rec else ''
+        html += f'<tr class="{row_class}">'
+        html += f'<td>{row["Price"]}</td>'
+        html += f'<td>{row["Retailer"]}</td>'
+        html += f'<td><a href="{row["Link"]}" target="_blank">Link</a></td>'
+        html += f'<td>{row["Stock"]}</td>'
+        html += '</tr>'
+    
+    html += '</tbody></table>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def parse_and_render_copy(copy_block: str, phone: str):
+    """Parses the copy block robustly and renders the UI sections."""
+    
+    # Define keywords and corresponding dictionary keys
+    markers = ["BANNERS:", "TIKTOK:", "IG:", "FB:", "WHATSAPP:", "HASHTAGS:"]
+    social_data = {}
+    banners = []
+    hashtags = ""
+    
+    # Split the block by markers
+    parts = re.split(f'({"|".join(markers)})', copy_block, flags=re.IGNORECASE)
+    
+    # The split results in [content_before, marker, content_after, marker, content_after, ...]
+    # We ignore content_before (parts[0]) and iterate over markers and content
+    for i in range(1, len(parts), 2):
+        marker = parts[i].upper().strip(':')
+        content = parts[i+1].strip()
+        
+        if marker == "BANNERS":
+            banners = [l.strip() for l in content.splitlines() if l.strip()][:2]
+        elif marker == "HASHTAGS":
+            hashtags = content.splitlines()[-1].strip() if content else ""
+        elif marker in ("TIKTOK", "IG", "FB", "WHATSAPP"):
+            # Map marker to display name
+            key = marker.capitalize() if marker != "WHATSAPP" else "WhatsApp"
+            social_data[key] = content
+
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Banner Text**")
+        if banners:
+            for b in banners:
+                st.code(b, language="text")
+        else:
+            st.caption("No banner text generated.")
+    
+    with c2:
+        st.markdown("**Social Media Copy**")
+        st.text_area("TikTok", social_data.get("TikTok", ""), height=60, key="tt")
+        st.text_area("Instagram", social_data.get("IG", ""), height=70, key="ig")
+        st.text_area("Facebook", social_data.get("FB", ""), height=70, key="fb")
+        st.text_area("WhatsApp", social_data.get("WhatsApp", f"Get {phone} at Tripple K! {TRIPPLEK_PHONE}"), height=100, key="wa")
+        st.text_input("Hashtags", hashtags)
+
+
 ############################ STREAMLIT UI ####################################
 inject_brand_css()
 
 # Sidebar
 with st.sidebar:
     st.title("Settings")
-    use_web_data = st.toggle("Use live web data", value=True, help="Search Kenyan retailers for real prices")
+    use_web_data = st.toggle("Use live web data", value=True, help="Search Kenyan retailers for prices before generating copy.")
     
     persona = st.selectbox("Target Audience", 
         ["All Kenyan buyers", "Budget students", "Tech-savvy pros", "Camera creators", "Business execs"],
@@ -420,121 +547,101 @@ with st.sidebar:
 st.title("Tripple K Phone Ad Generator")
 st.caption("Data-Driven Marketing Kits | www.tripplek.co.ke")
 
-phone = st.text_input("Phone model", placeholder="e.g., Samsung Galaxy A17")
+phone_input = st.text_input("Phone model", placeholder="e.g., Samsung Galaxy A17")
 
-if st.button("Generate Marketing Kit", type="primary"):
-    if not phone:
+# --- STAGE 1: SEARCH ---
+if st.button("Search Kenyan Prices", type="primary"):
+    if not phone_input:
         st.error("Please enter a phone model")
-        st.stop()
-    
-    with st.status("Generating marketing kit...", expanded=True) as status:
-        results = []
+        st.session_state['results'] = []
+        st.session_state['kit'] = None
+    else:
+        st.session_state['phone'] = phone_input
+        st.session_state['kit'] = None # Clear previous kit
         
-        if use_web_data:
-            st.write("Searching Kenyan retailers...")
-            results = fetch_kenyan_prices(phone)
-            
-            if not results:
-                st.warning("No relevant Kenyan web data found. Generating AI-only copy...")
-                use_web_data = False
-            else:
-                st.write(f"Found {len(results)} relevant Kenyan listings")
-        
-        st.write("Generating marketing content...")
-        
-        if use_web_data and results:
-            kit = generate_with_data(phone, results, persona, tone)
-        else:
-            kit = generate_without_data(phone, persona, tone)
-        
-        if "error" in kit:
-            st.error(f"AI error: {kit['error']}")
-            st.stop()
-        
-        status.update(label="Marketing Kit Ready!", state="complete", expanded=False)
-    
-    # Phone name
-    st.markdown(f"## {phone}")
-    
-    # 2-sentence summary
-    if use_web_data and results:
-        prices_numeric = [r["price_ksh_int"] for r in results if r["price_ksh_int"] > 0]
-        
-        if prices_numeric:
-            min_p, max_p = min(prices_numeric), max(prices_numeric)
-            oos_count = sum(1 for r in results if "out" in r["stock"].lower())
-            stock_note = "Most listings are in stock." if oos_count == 0 else "Some retailers are out of stock."
-            
-            st.info(f"Kenyan prices range from KSh {min_p:,} to KSh {max_p:,}. {stock_note}")
-    
-    # Price table with recommended price
-    if kit.get("prices"):
-        st.subheader("Market Prices")
-        price_lines = [l.strip() for l in kit["prices"].splitlines() if l.strip()]
-        
-        rows = []
-        prices_numeric_for_calc = [r["price_ksh_int"] for r in results if r["price_ksh_int"] > 0]
-        
-        # Add competitor listings
-        for i, line in enumerate(price_lines):
-            parts = line.split(" - ")
-            if len(parts) >= 3:
-                price_str = parts[1]
-                # Find the matching original result for stock info by price string (robust link)
-                match = next((r for r in results if r["price_ksh_str"] == price_str), None)
+        with st.status("Searching Kenyan retailers...", expanded=True) as status:
+            if use_web_data:
+                results = fetch_kenyan_prices(phone_input)
                 
-                rows.append({
-                    "Price": price_str,
-                    "Retailer": extract_retailer(parts[2]),
-                    "Link": " - ".join(parts[2:]),
-                    "Stock": match["stock"] if match else "In stock",
-                    "price_val": match["price_ksh_int"] if match else 0,
-                    "is_rec": False
-                })
+                if not results:
+                    st.warning("No relevant Kenyan web data found. Proceed with generic copy if needed.")
+                else:
+                    st.write(f"Found {len(results)} relevant Kenyan listings")
+            else:
+                results = []
+                st.info("Web data search skipped by user setting.")
+
+            st.session_state['results'] = results
+            status.update(label="Search Complete!", state="complete", expanded=False)
+
+
+# Display results if available
+if st.session_state['results']:
+    st.markdown(f"## {st.session_state['phone']} - Market Analysis")
+    
+    # Summary
+    prices_numeric = [r["price_ksh_int"] for r in st.session_state['results'] if r["price_ksh_int"] > 0]
+    
+    if prices_numeric:
+        min_p, max_p = min(prices_numeric), max(prices_numeric)
+        oos_count = sum(1 for r in st.session_state['results'] if "out" in r["stock"].lower())
+        stock_note = "Most listings are in stock." if oos_count == 0 else "Some retailers are out of stock."
         
-        # Calculate statistically derived recommended price
-        if prices_numeric_for_calc:
-            price_series = pd.Series(prices_numeric_for_calc)
-            
-            # Use 75th percentile as a high-value competitive price base
-            rec_price_base = price_series.quantile(0.75)
-            
-            # Apply a competitive markdown and round to the nearest 100 for a clean price
-            rec_price = int(round((rec_price_base - 500) / 100) * 100)
-            
-            # Fallback check: Ensure the price is not unreasonably low
-            min_comp_price = price_series.min()
-            if rec_price < min_comp_price * 0.90: 
-                rec_price = int(round((min_comp_price - 100) / 100) * 100)
-            
-            # Add recommended price to the table
-            rows.append({
-                "Price": f"KSh {rec_price:,}",
-                "Retailer": "Tripple K (Recommended)",
-                "Link": "https://www.tripplek.co.ke",
-                "Stock": "Available",
-                "price_val": rec_price,
-                "is_rec": True
-            })
-        
-        # Sort by price high to low
-        rows.sort(key=lambda x: x["price_val"], reverse=True)
-        
-        df = pd.DataFrame([{
-            "Price": r["Price"],
-            "Retailer": r["Retailer"],
-            "Link": r["Link"],
-            "Stock": r["Stock"]
-        } for r in rows])
-        
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.info(f"**Market Price Range:** KSh {min_p:,} to KSh {max_p:,}. {stock_note}")
+    
+    # Price Table (now using the render function)
+    st.subheader("Competitor Price Comparison")
+    render_price_table(st.session_state['results'])
+    
+    
+    # --- STAGE 2: GENERATE COPY ---
+    st.subheader("Generate Ad Copy")
+    
+    if prices_numeric:
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Generate Data-Driven Copy", type="primary"):
+                with st.status("Generating copy with market data...", expanded=False):
+                    kit = generate_with_data(st.session_state['phone'], st.session_state['results'], persona, tone)
+                    if "error" in kit:
+                        st.error(f"AI error: {kit['error']}")
+                    else:
+                        st.session_state['kit'] = kit
+                        st.success("Copy Generation Complete!")
+
+        with col2:
+            if st.button("Generate Generic Copy (No Prices)"):
+                with st.status("Generating generic copy...", expanded=False):
+                    kit = generate_without_data(st.session_state['phone'], persona, tone)
+                    if "error" in kit:
+                        st.error(f"AI error: {kit['error']}")
+                    else:
+                        st.session_state['kit'] = kit
+                        st.success("Copy Generation Complete!")
+
+    else:
+        st.warning("No prices found. Only generic copy generation is available.")
+        if st.button("Generate Generic Copy"):
+            with st.status("Generating generic copy...", expanded=False):
+                kit = generate_without_data(st.session_state['phone'], persona, tone)
+                if "error" in kit:
+                    st.error(f"AI error: {kit['error']}")
+                else:
+                    st.session_state['kit'] = kit
+                    st.success("Copy Generation Complete!")
+
+# --- DISPLAY FINAL KIT ---
+if st.session_state['kit']:
+    kit = st.session_state['kit']
+    st.markdown("---")
+    st.markdown(f"## Marketing Kit for {st.session_state['phone']}")
     
     # Specs
     if kit.get("specs"):
         st.subheader("Key Specs")
         st.text(kit["specs"])
     
-    # Insights
+    # Insights (Only available with data)
     if kit.get("insights"):
         with st.expander("Strategic Market Insights"):
             for line in kit["insights"].splitlines():
@@ -542,50 +649,18 @@ if st.button("Generate Marketing Kit", type="primary"):
                     st.markdown(f"* {line.strip()}")
     
     # Ad Copy
-    st.subheader("Ready-to-Use Ad Copy")
-    
-    lines = [l.strip() for l in kit["copy"].splitlines() if l.strip()]
-    banners, social, hashtags = [], {}, ""
-    current = None
-    
-    for line in lines:
-        if "BANNERS:" in line:
-            current = "banner"
-        elif "TikTok:" in line or "TIKTOK:" in line:
-            social["TikTok"] = line.split(":", 1)[1].strip()
-        elif "IG:" in line:
-            social["IG"] = line.split(":", 1)[1].strip()
-        elif "FB:" in line:
-            social["FB"] = line.split(":", 1)[1].strip()
-        elif "WHATSAPP:" in line.upper():
-            social["WhatsApp"] = line.split(":", 1)[1].strip()
-        elif line.startswith("#"):
-            hashtags = line
-        elif current == "banner" and len(banners) < 2:
-            banners.append(line)
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Banner Text**")
-        for b in banners[:2]:
-            st.code(b, language="text")
-    
-    with c2:
-        st.markdown("**Social Media Copy**")
-        st.text_area("TikTok", social.get("TikTok", ""), height=60, key="tt")
-        st.text_area("Instagram", social.get("IG", ""), height=70, key="ig")
-        st.text_area("Facebook", social.get("FB", ""), height=70, key="fb")
-        st.text_area("WhatsApp", social.get("WhatsApp", f"Get {phone} at Tripple K! {TRIPPLEK_PHONE}"), height=100, key="wa")
-        st.text_input("Hashtags", hashtags)
-    
-    # Product images
-    if use_web_data and results:
+    if kit.get("copy"):
+        st.subheader("Ready-to-Use Ad Copy")
+        parse_and_render_copy(kit["copy"], st.session_state['phone'])
+
+    # Product images (Only available with data)
+    if st.session_state['results']:
         st.subheader("Product Images (Preview)")
         with st.spinner("Checking retailer sites..."):
             valid_images = []
-            for r in results[:5]:
+            for r in st.session_state['results'][:5]:
                 if "tripplek" not in r["url"].lower():
-                    img_url = predict_image_url(phone, r["url"])
+                    img_url = predict_image_url(st.session_state['phone'], r["url"])
                     if img_url and validate_image(img_url):
                         valid_images.append({"url": r["url"], "img": img_url})
                         if len(valid_images) >= 3:
