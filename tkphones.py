@@ -7,20 +7,31 @@ import pandas as pd
 from datetime import datetime
 from urllib.parse import urlparse
 import concurrent.futures
+import json
+import os
 
 ############################ CONFIG ################################
+# Get Groq key from secrets (required)
+GROQ_KEY = st.secrets.get("groq_key", "")
+if not GROQ_KEY:
+    st.error("❗ Add `groq_key` to `.streamlit/secrets.toml`")
+    st.stop()
 
-# Robust SearXNG instances for failover. Your preferred instance is FIRST.
+from groq import Groq
+client = Groq(api_key=GROQ_KEY)
+
+# SearXNG instances (trimmed)
 SEARX_INSTANCES = [
-    "https://searxng-587s.onrender.com/", 
     "https://searx.be/search",
     "https://search.ononoki.org/search",
     "https://searxng.site/search",
-    "https://northboot.xyz/search",
+    "https://northboot.xyz/search"
 ]
 
+MODEL = "llama-3.1-8b-instant"
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
-RATE_LIMIT = 0 # No rate limit
+RATE_LIMIT = 3
+LAST_CALL = 0
 
 # Branding
 BRAND_GREEN = "#4CAF50"
@@ -29,19 +40,9 @@ BACKGROUND_LIGHT = "#F9FAF8"
 TRIPPLEK_PHONE = "+254700123456"
 
 now = datetime.now()
-CURRENT_YEAR = f'{now.year:04d}'
-CURRENT_MONTH = f'{now.month:02d}'
+is_christmas = (now.month == 12 and now.day >= 1) or (now.month == 1 and now.day <= 10)
+CHRISTMAS_HOOK = "Perfect Christmas gift with warranty & fast delivery!" if is_christmas else ""
 ####################################################################
-
-
-# Initialize session state for workflow
-if 'results' not in st.session_state:
-    st.session_state['results'] = []
-if 'phone' not in st.session_state:
-    st.session_state['phone'] = ""
-if 'search_metadata' not in st.session_state:
-    st.session_state['search_metadata'] = {}
-
 
 def inject_brand_css():
     st.markdown(f"""
@@ -67,114 +68,83 @@ def inject_brand_css():
     .main {{
         background-color: {BACKGROUND_LIGHT};
     }}
+    .recommended-price {{
+        background-color: #E8F5E9 !important;
+        font-weight: bold;
+    }}
+    @media (max-width: 768px) {{
+        .stTextArea textarea, .stCodeBlock {{
+            font-size: 14px !important;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }}
+    }}
     </style>
     """, unsafe_allow_html=True)
 
-
 @st.cache_resource
 def warm_up_searx():
-    """Pings all instances to find available ones."""
     def ping_instance(url):
         try:
-            r = requests.get(url, params={"q": "test", "format": "json"}, timeout=15)
+            r = requests.get(url, params={"q": "test", "format": "json"}, timeout=8)
             return url if r.status_code == 200 else None
         except:
             return None
-    
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         results = list(executor.map(ping_instance, SEARX_INSTANCES))
-    
     online = [r for r in results if r]
-    return online
-
+    return online if online else SEARX_INSTANCES
 
 def extract_retailer(url: str) -> str:
-    """Extracts a clean retailer name from a URL."""
     if not url:
-        return "Unknown"
+        return "unknown"
     domain = urlparse(url).netloc.lower()
     domain = re.sub(r"^(www|m|mobile|shop)\.", "", domain)
-    retailer = domain.split(".")[0]
-    return retailer.capitalize() if retailer else "Unknown"
+    return domain.split(".")[0].capitalize()
 
 def extract_slug_from_url(url: str) -> str:
-    """Extracts the final path segment of the URL, cleaning up query params."""
     clean = url.split("?", 1)[0].split("#", 1)[0]
     parts = [p for p in clean.split("/") if p]
     return parts[-1].lower() if parts else ""
 
-def extract_date_from_content(content: str) -> str | None:
-    """
-    Uses Regex to extract a common date string from the snippet content.
-    Example: 'Jan 27, 2017', 'January 2025', '4 Sep 2025'
-    """
-    # Regex pattern to catch common month/year formats, regardless of case
-    date_match = re.search(
-        r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[uarychrilgustembto\.]{0,9}\s+\d{1,2},?\s*\d{4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[uarychrilgustembto\.]{0,9}\s+\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[uarychrilgustembto\.]{0,9}\s+\d{4}',
-        content,
-        re.IGNORECASE
-    )
-    if date_match:
-        # Return the matched string, letting the UI handle display
-        return date_match.group(0).strip()
-    return None
-
-
-def get_rule_based_image_urls(url: str) -> list[str]:
-    """
-    Generates a list of likely image URLs based on common e-commerce/WooCommerce patterns
-    and the product slug from the URL. No AI used.
-    """
+def predict_image_url(phone: str, url: str) -> str:
     slug = extract_slug_from_url(url)
-    if not slug:
-        return []
-
+    prompt = f"""Product: {phone}
+URL: {url}
+Slug: {slug}
+Most Kenyan e-commerce sites use WooCommerce. Predict the direct image URL.
+Common patterns:
+/wp-content/uploads/2025/12/{slug}.jpg
+/wp-content/uploads/2025/12/{slug}-1024x1024.jpg
+Return only the full image URL or "unknown"."""
     try:
-        parsed_url = urlparse(url)
-        domain = parsed_url.netloc
-        path_segments = [p for p in parsed_url.path.split('/') if p]
+        comp = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=100,
+            timeout=8
+        )
+        pred = comp.choices[0].message.content.strip()
+        return pred if pred != "unknown" and pred.startswith("http") else ""
     except:
-        return []
-
-    # Get year/month from current date for WooCommerce upload path
-    y, m = CURRENT_YEAR, CURRENT_MONTH
-    
-    # Common WooCommerce/e-commerce patterns based on user feedback
-    patterns = [
-        # 1. Standard WooCommerce Path (Current Month)
-        f"https://{domain}/wp-content/uploads/{y}/{m}/{slug}.jpg",
-        # 2. Standard WooCommerce Path (Current Month, lower resolution variant)
-        f"https://{domain}/wp-content/uploads/{y}/{m}/{slug}-800x800.jpg",
-        # 3. Standard WooCommerce Path (Previous Year December fallback)
-        f"https://{domain}/wp-content/uploads/{int(y)-1}/12/{slug}.jpg",
-        # 4. Avechi/simple "product" structure (often used by local sites)
-        f"https://{domain}/image/{slug}.jpg",
-        # 5. Simple slug with a known local path pattern (e.g. phonestablets.co.ke)
-        f"https://{domain}/wp-content/uploads/{slug}.jpg",
-    ]
-    
-    # Filter out empty strings and duplicates
-    return list(set([p for p in patterns if p.startswith('http')]))
+        return ""
 
 def validate_image(url: str) -> bool:
-    """Checks if a URL points to a valid, accessible image."""
     try:
-        # Reduced timeout for image check, since a failure here is not critical
-        r = requests.head(url, timeout=5, headers=HEADERS)
+        r = requests.head(url, timeout=3, headers=HEADERS)
         return r.status_code == 200 and "image" in r.headers.get("content-type", "").lower()
     except:
         return False
 
-def fetch_kenyan_prices(phone: str) -> tuple[list[dict], dict]:
-    
+def fetch_kenyan_prices(phone: str) -> list[dict]:
+    global LAST_CALL
     online_instances = warm_up_searx()
-    
-    if not online_instances:
-        return [], {"instance": "N/A", "raw_count": 0, "filtered_count": 0}
-
-    # Try each online instance sequentially
     for instance in online_instances:
-        
+        wait = RATE_LIMIT - (time.time() - LAST_CALL)
+        if wait > 0:
+            time.sleep(wait)
+        LAST_CALL = time.time()
         try:
             r = requests.get(
                 instance,
@@ -185,283 +155,385 @@ def fetch_kenyan_prices(phone: str) -> tuple[list[dict], dict]:
                     "safesearch": "0"
                 },
                 headers=HEADERS,
-                timeout=60 # Increased timeout to 60 seconds
+                timeout=25
             )
-            
             if r.status_code == 200:
-                raw_data = r.json()
-                raw_results = raw_data.get("results", [])
-                
-                # --- FILTERING LOGIC ---
-                # SMART FILTER: Only searching for 'ke' string in URL
-                kenyan_indicators = ['ke'] 
-                
-                filtered_results = []
-                for res in raw_results:
-                    url = res.get("url", "").lower()
-                    # Filter for Kenyan URLs (must contain 'ke')
-                    if any(indicator in url for indicator in kenyan_indicators):
-                        filtered_results.append(res)
-                # -----------------------------
-                
-                # NO RESULT LIMIT
-                results = filtered_results 
+                raw_results = r.json().get("results", [])[:60]
+                st.session_state['raw_searx_results'] = raw_results  # Save raw
                 enriched = []
-                for res in results:
-                    title = res.get("title", "") # NO TRIMMING
-                    content = res.get("content", "") # NO TRIMMING
+                for res in raw_results:
+                    title = res.get("title", "")
+                    content = res.get("content", "")
                     url = res.get("url", "")
-                    search_text = f"{title} {content}".lower() 
+                    full_text = f"{title} {content}".lower()
                     
-                    published_date = res.get("publishedDate") # NEW: Extract date
-                    if not published_date:
-                        published_date = extract_date_from_content(content) # Fallback extraction
-
-                    engine = res.get("engine", "Unknown") # NEW: Extract engine
-                    
-                    # Price Extraction
+                    # --- ROBUST PRICE REGEX (handles decimals, commas, suffixes) ---
                     price_match = re.search(
-                        r'(?:ksh?|kes|shillings?|k\.sh\.)\s*[:\-]?\s*(\d{3,}(?:,\d{3})*)',
-                        search_text,
+                        r'(?:ksh?|kes|shillings?|k\.sh\.)\s*[:\-]?\s*(\d{1,3}(?:,\d{3})*(?:\.\d*)?)(?:\s*[/\'\-=]*)?|'
+                        r'(\d{1,3}(?:,\d{3})*(?:\.\d*)?)\s*(?:ksh?|kes|shillings?|k\.sh\.)(?:\s*[/\'\-=]*)?',
+                        full_text,
                         re.IGNORECASE
                     )
-                    
-                    price_str = None
-                    price_int = 0
+                    price_ksh_str = None
+                    price_ksh_int = 0
                     if price_match:
-                        clean_price = re.sub(r"[^\d]", "", price_match.group(1))
-                        if clean_price.isdigit():
-                            price_int = int(clean_price)
-                            price_str = f"KSh {price_int:,}" 
+                        raw_price = price_match.group(1) or price_match.group(2)
+                        clean_price = re.sub(r"[^\d]", "", raw_price.split('.')[0])
+                        if clean_price.isdigit() and len(clean_price) >= 4:
+                            price_ksh_int = int(clean_price)
+                            price_ksh_str = f"KSh {price_ksh_int:,}"
                     
-                    # Stock Check
+                    # --- Stock ---
                     stock = "In stock"
-                    if any(w in search_text for w in ["out of stock", "sold out", "unavailable"]):
+                    if any(w in full_text for w in ["out of stock", "sold out", "unavailable"]):
                         stock = "Out of stock"
-                    elif any(w in search_text for w in ["limited stock", "few left", "hurry"]):
+                    elif any(w in full_text for w in ["limited stock", "few left", "hurry"]):
                         stock = "Limited stock"
                     
                     enriched.append({
-                        "title": title,
+                        "title": title[:180],
                         "url": url,
-                        "content": content,
-                        "price_ksh_str": price_str,
-                        "price_ksh_int": price_int,
+                        "content": content[:300],
+                        "price_ksh_str": price_ksh_str,
+                        "price_ksh_int": price_ksh_int,
                         "stock": stock,
-                        "retailer": extract_retailer(url),
-                        "published_date": published_date,
-                        "engine": engine, # NEW FIELD
+                        "published_date": res.get("publishedDate"),
+                        "engine": res.get("engine", "Unknown")
                     })
-                
-                metadata = {
-                    "instance": instance,
-                    "raw_count": len(raw_results),
-                    "filtered_count": len(filtered_results)
-                }
-                return enriched, metadata
-                
+                return enriched
         except Exception as e:
-            st.sidebar.warning(f"Search failed for {instance}. Trying next available search engine...")
+            st.sidebar.warning(f"Trying backup search engine...")
             continue
-    
-    return [], {"instance": "N/A", "raw_count": 0, "filtered_count": 0} 
+    return []
 
-
-def render_price_table(results: list[dict]):
-    """Renders the price comparison table with Tripple K's recommended price using st.dataframe."""
-    
-    rows = []
-    prices_numeric_for_calc = [r["price_ksh_int"] for r in results if r["price_ksh_int"] > 0]
-    
-    # 1. Add competitor listings (only those with a price)
+def generate_with_data(phone: str, results: list[dict], persona: str, tone: str) -> dict:
+    context_lines = []
     for r in results:
-        if r["price_ksh_int"] > 0:
-            rows.append({
-                "Price": r["price_ksh_str"],
-                "Retailer": r["retailer"],
-                "Date": r["published_date"] if r["published_date"] else "N/A",
-                "Source": r["engine"].capitalize(),
-                "Link": r["url"],
-                "Stock": r["stock"],
-                "price_val": r["price_ksh_int"],
-                "title": r["title"], 
-                "is_rec": False
-            })
-
-    # 2. Calculate and add recommended price
-    rec_price = 0
-    if prices_numeric_for_calc:
-        price_series = pd.Series(prices_numeric_for_calc)
-        
-        rec_price_base = price_series.quantile(0.75)
-        rec_price = int(round((rec_price_base - 500) / 100) * 100)
-        
-        min_comp_price = price_series.min()
-        if rec_price < min_comp_price * 0.90: 
-            rec_price = int(round((min_comp_price - 100) / 100) * 100)
-        
-        rows.append({
-            "Price": f"KSh {rec_price:,}",
-            "Retailer": "Tripple K (Recommended)",
-            "Date": now.strftime('%b %d, %Y'),
-            "Source": "Internal",
-            "Link": "https://www.tripplek.co.ke",
-            "Stock": "Available",
-            "price_val": rec_price,
-            "title": f"{st.session_state.get('phone', 'Phone Model')} - Competitive Pricing",
-            "is_rec": True
-        })
+        price = f" | {r['price_ksh_str']}" if r["price_ksh_str"] else ""
+        context_lines.append(
+            f"Title: {r['title']}{price}\n"
+            f"URL: {r['url']}\n"
+            f"Snippet: {r['content']}\n"
+            f"Stock: {r['stock']}\n---"
+        )
+    web_context = "\n".join(context_lines) if context_lines else "No data"
     
-    # 3. Sort and create DataFrame
-    rows.sort(key=lambda x: x["price_val"], reverse=True)
-    
-    # Prepare data for st.dataframe
-    df = pd.DataFrame([{
-        "Retailer": r["Retailer"],
-        "Price": r["Price"],
-        "Date": r["Date"],
-        "Stock": r["Stock"],
-        "Source": r["Source"],
-        "Product Title": r["title"], 
-        "Link": f"[View Link]({r['Link']})" if r['Link'].startswith('http') else "N/A"
-    } for r in rows])
+    prompt = f"""You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
 
-    # 4. Render
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_order=["Retailer", "Price", "Date", "Stock", "Source", "Product Title", "Link"]
-    )
+TRIPPLE K VALUE PROPS (mention in copy):
+* Accredited distributor
+* Official warranty
+* Pay on delivery
+* Nairobi delivery
 
+{f"SEASONAL: {CHRISTMAS_HOOK}" if CHRISTMAS_HOOK else ""}
 
-def render_image_previews(results: list[dict]):
-    st.subheader("Product Images (Rule-Based Preview)")
-    
-    with st.spinner("Attempting rule-based image detection..."):
-        valid_images = []
-        checked_urls = set()
-        
-        # Check only the top 5 price-bearing results for image URLs
-        top_results_with_price = [r for r in results if r['price_ksh_int'] > 0][:5]
-        
-        for r in top_results_with_price:
-            if len(valid_images) >= 3:
-                break
-                
-            # Skip checking the recommended URL for images
-            if "tripplek.co.ke" in r["url"].lower():
-                continue
-                
-            # Generate image possibilities based on the retailer's URL structure
-            possible_urls = get_rule_based_image_urls(r["url"])
-            
-            for img_url in possible_urls:
-                if img_url not in checked_urls and len(valid_images) < 3:
-                    checked_urls.add(img_url)
-                    if validate_image(img_url):
-                        valid_images.append({"url": r["url"], "img": img_url})
-                        break # Found one image for this retailer, move to next retailer
+PHONE: {phone}
+PERSONA: {persona}
+TONE: {tone}
 
-        if valid_images:
-            cols = st.columns(3)
-            for i, item in enumerate(valid_images):
-                if i < 3:
-                    with cols[i]:
-                        st.image(item["img"], use_container_width=True)
-                        st.caption(f"Source: {extract_retailer(item['url'])}")
-        else:
-            st.caption("No valid product images found based on common e-commerce URL patterns.")
+MARKET DATA:
+{web_context}
 
-# UI elements for displaying metadata
-def render_metadata(metadata: dict):
-    if metadata:
-        c1, c2, c3 = st.columns(3)
-        
-        c1.metric("Search Instance Used", metadata.get("instance", "N/A"))
-        c2.metric("Total Raw Results", metadata.get("raw_count", 0))
-        c3.metric("Filtered Kenyan Results", metadata.get("filtered_count", 0))
-    st.markdown("---")
+OUTPUT 4 SECTIONS:
 
+---PRICE---
+List: "Retailer - KSh X,XXX - URL" for each result with price
+
+---SPECS---
+5-10 key specs from data
+
+---INSIGHTS---
+3-5 bullet points on market trends, what makes this phone compelling
+
+---COPY---
+BANNERS: 2 lines, max 40 chars, include "Tripple K"
+TIKTOK: 1 fun line <100 chars, use emoji for Playful tone
+IG: 2-3 sentences highlighting benefits
+FB: Similar to IG
+WHATSAPP: Include {TRIPPLEK_PHONE}, mention warranty, pay on delivery, {CHRISTMAS_HOOK if CHRISTMAS_HOOK else ""}
+HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE
+
+Plain text only. Use real data."""
+    try:
+        comp = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=2400,
+            timeout=50
+        )
+        raw = comp.choices[0].message.content.strip()
+        parts = raw.split("---PRICE---")
+        if len(parts) < 2:
+            return {"error": "Invalid format"}
+        rest = parts[1]
+        price_block = rest.split("---SPECS---")[0].strip() if "---SPECS---" in rest else ""
+        rest = rest.split("---SPECS---", 1)[1] if "---SPECS---" in rest else ""
+        specs_block = rest.split("---INSIGHTS---")[0].strip() if "---INSIGHTS---" in rest else ""
+        rest = rest.split("---INSIGHTS---", 1)[1] if "---INSIGHTS---" in rest else ""
+        insights_block = rest.split("---COPY---")[0].strip() if "---COPY---" in rest else ""
+        copy_block = rest.split("---COPY---", 1)[1].strip() if "---COPY---" in rest else ""
+        return {
+            "prices": price_block,
+            "specs": specs_block,
+            "insights": insights_block,
+            "copy": copy_block
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+def generate_without_data(phone: str, persona: str, tone: str) -> dict:
+    prompt = f"""You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
+
+Create marketing copy for:
+PHONE: {phone}
+PERSONA: {persona}
+TONE: {tone}
+
+TRIPPLE K VALUE PROPS:
+* Accredited distributor
+* Official warranty
+* Pay on delivery
+* Nairobi delivery
+
+{f"SEASONAL: {CHRISTMAS_HOOK}" if CHRISTMAS_HOOK else ""}
+
+DO NOT invent prices or fake specs. Focus on benefits and trust.
+
+OUTPUT:
+---SPECS---
+General expected specs for this phone model (if known)
+
+---COPY---
+BANNERS: 2 lines, max 40 chars
+TIKTOK: 1 line <100 chars
+IG: 2-3 sentences
+FB: Similar to IG
+WHATSAPP: Include {TRIPPLEK_PHONE}, warranty, delivery, {CHRISTMAS_HOOK if CHRISTMAS_HOOK else ""}
+HASHTAGS: #TrippleK #TrippleKKE #PhoneDealsKE
+
+Plain text only."""
+    try:
+        comp = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=1000,
+            timeout=30
+        )
+        raw = comp.choices[0].message.content.strip()
+        specs_block = ""
+        copy_block = raw
+        if "---SPECS---" in raw:
+            parts = raw.split("---SPECS---", 1)[1]
+            specs_block = parts.split("---COPY---")[0].strip() if "---COPY---" in parts else ""
+            copy_block = parts.split("---COPY---", 1)[1].strip() if "---COPY---" in parts else ""
+        return {
+            "prices": "",
+            "specs": specs_block,
+            "insights": "",
+            "copy": copy_block
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 ############################ STREAMLIT UI ####################################
 inject_brand_css()
 
 # Sidebar
 with st.sidebar:
-    st.title("About this Tool")
-    st.markdown("""
-    This is a **Minimal, Non-AI** price comparison tool for Tripple K Communications.
-    
-    It retrieves live competitor pricing from Kenyan e-commerce sites to help set a competitive Tripple K price.
-    
-    **Timeout:** 60 seconds per instance.
-    """)
+    st.title("GenerationStrategy")
+    use_web_data = st.toggle("Use live web data", value=True, help="Search Kenyan retailers for real prices")
+    persona = st.selectbox("Target Audience", 
+        ["All Kenyan buyers", "Budget students", "Tech-savvy pros", "Camera creators", "Business execs"],
+        index=0)
+    tone = st.selectbox("Brand Tone", 
+        ["Playful", "Rational", "Luxury", "FOMO"],
+        index=0)
     st.divider()
     st.caption("Tripple K Communications")
     st.caption("Accredited distributor")
+    st.caption("Official warranty included")
+    if CHRISTMAS_HOOK:
+        st.success(CHRISTMAS_HOOK)
 
 # Main view
-st.title("Tripple K Price Finder (Minimal)")
-st.caption("Data Retrieval and Comparison Only | tripplek.co.ke")
+st.title("Tripple K Phone Ad Generator")
+st.caption("Data-Driven Marketing Kits | www.tripplek.co.ke")
 
-phone_input = st.text_input("Phone model", placeholder="e.g., Samsung Galaxy A17, Xiaomi Poco X7")
+phone = st.text_input("Phone model", placeholder="e.g., Samsung Galaxy A17, Poco X7")
 
-# --- STAGE 1: SEARCH ---
-if st.button("Search Kenyan Prices", type="primary"):
-    if not phone_input:
+if st.button("Generate Marketing Kit", type="primary"):
+    if not phone:
         st.error("Please enter a phone model")
-    else:
-        st.session_state['phone'] = phone_input
-        st.session_state['search_metadata'] = {}
-        
-        with st.status("Searching Kenyan retailers (max 60s wait per instance)...", expanded=True) as status:
-            results, metadata = fetch_kenyan_prices(phone_input)
-            
+        st.stop()
+    
+    with st.status("Generating marketing kit...", expanded=True) as status:
+        results = []
+        if use_web_data:
+            st.write("Searching Kenyan retailers...")
+            results = fetch_kenyan_prices(phone)
             if not results:
-                st.warning("No relevant Kenyan web data found or all search APIs are unreachable.")
+                st.warning("No web data found. Generating AI-only copy...")
+                use_web_data = False
             else:
-                st.write(f"Found {len(results)} total filtered listings.")
+                st.write(f"Found {len(results)} listings")
+        st.write("Generating marketing content...")
+        if use_web_data and results:
+            kit = generate_with_data(phone, results, persona, tone)
+        else:
+            kit = generate_without_data(phone, persona, tone)
+        if "error" in kit:
+            st.error(f"AI error: {kit['error']}")
+            st.stop()
+        status.update(label="Marketing Kit Ready!", state="complete", expanded=False)
 
-            st.session_state['results'] = results
-            st.session_state['search_metadata'] = metadata
-            status.update(label="Search Complete!", state="complete", expanded=False)
-            
-            st.rerun() 
+    # Summary
+    st.markdown(f"## {phone}")
+    if use_web_data and results:
+        prices_numeric = [r["price_ksh_int"] for r in results if r["price_ksh_int"] > 0]
+        if prices_numeric:
+            min_p, max_p = min(prices_numeric), max(prices_numeric)
+            oos_count = sum(1 for r in results if "out" in r["stock"].lower())
+            stock_note = "Most listings are in stock." if oos_count == 0 else "Some retailers are out of stock."
+            st.info(f"Kenyan prices range from KSh {min_p:,} to KSh {max_p:,}. {stock_note}")
 
+    # Price Cards
+    if use_web_data and results:
+        priced_results = [r for r in results if r["price_ksh_int"] > 0]
+        if priced_results:
+            st.subheader("Competitor Prices")
+            cols = st.columns(min(3, len(priced_results)))
+            for i, r in enumerate(priced_results):
+                with cols[i % len(cols)]:
+                    st.markdown(f"""
+                    <div style="background:white;padding:1rem;border-radius:8px;box-shadow:0 2px 6px #ddd;margin-bottom:1rem;">
+                        <h4 style="color:{BRAND_MAROON};margin:0;">{r['retailer']}</h4>
+                        <p style="font-size:1.2rem;font-weight:bold;color:{BRAND_GREEN};margin:0.5rem 0;">{r['price_ksh_str']}</p>
+                        <p style="font-size:0.9rem;color:gray;margin:0.25rem 0;">{r['stock']}</p>
+                        <a href="{r['url']}" target="_blank" style="font-size:0.85rem;color:{BRAND_MAROON};">View →</a>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-# Display results if available
-if st.session_state['results']:
-    phone = st.session_state.get('phone', phone_input)
-    st.markdown(f"## {phone} - Price Analysis")
-    
-    render_metadata(st.session_state['search_metadata'])
+    # Price Table with Recommended Price
+    if kit.get("prices"):
+        st.subheader("Market Price Comparison")
+        price_lines = [l.strip() for l in kit["prices"].splitlines() if l.strip()]
+        rows = []
+        prices_numeric = []
+        for i, line in enumerate(price_lines):
+            parts = line.split(" - ")
+            if len(parts) >= 3:
+                price_str = parts[1]
+                clean = re.sub(r"[^\d]", "", price_str)
+                price_val = int(clean) if clean.isdigit() else 0
+                if price_val > 0:
+                    prices_numeric.append(price_val)
+                    rows.append({
+                        "Price": price_str,
+                        "Retailer": extract_retailer(parts[2]),
+                        "Link": " - ".join(parts[2:]),
+                        "Stock": results[i]["stock"] if i < len(results) else "In stock",
+                        "price_val": price_val,
+                        "is_rec": False
+                    })
+        # Add Tripple K recommended price
+        if prices_numeric:
+            rec_price = max(prices_numeric) - 500
+            rows.append({
+                "Price": f"KSh {rec_price:,}",
+                "Retailer": "Tripple K (Recommended)",
+                "Link": "https://www.tripplek.co.ke",
+                "Stock": "Available",
+                "price_val": rec_price,
+                "is_rec": True
+            })
+        rows.sort(key=lambda x: x["price_val"], reverse=True)
+        df = pd.DataFrame([{
+            "Retailer": r["Retailer"],
+            "Price": r["Price"],
+            "Stock": r["Stock"],
+            "Link": f"[View]({r['Link']})" if r['Link'].startswith('http') else r['Link']
+        } for r in rows])
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-    prices_numeric = [r["price_ksh_int"] for r in st.session_state['results'] if r["price_ksh_int"] > 0]
-    
-    if prices_numeric:
-        min_p, max_p = min(prices_numeric), max(prices_numeric)
-        oos_count = sum(1 for r in st.session_state['results'] if "out" in r["stock"].lower())
-        stock_note = "Most listings are in stock." if oos_count == 0 else "Some retailers are out of stock."
-        
-        st.info(f"**Market Price Range:** KSh {min_p:,} to KSh {max_p:,}. {stock_note}")
-    
-    st.subheader("Competitor Price Comparison")
-    render_price_table(st.session_state['results'])
-    
-    # --- Image Preview Section ---
-    render_image_previews(st.session_state['results'])
-    
-    # --- Display Raw Data for Debugging/Transparency ---
-    st.subheader("Raw Data Snippets (Full Content)")
-    with st.expander("Click to view full snippets from the raw search results (for debugging)"):
-        for i, r in enumerate(st.session_state['results']):
-            st.markdown(f"**{i+1}. {r['retailer']}** (`{r['price_ksh_str']}`) - Stock: {r['stock']} - Date: {r['published_date']} - Source: {r['engine'].capitalize()}")
-            st.caption(f"**URL:** {r['url']}")
-            st.caption(f"**Title:** {r['title']}")
-            st.markdown(f"*{r['content']}*")
-            st.markdown("---")
+    # Specs
+    if kit.get("specs"):
+        st.subheader("Key Specs")
+        st.text(kit["specs"])
 
-    
-    st.divider()
-    st.caption(f"Data Retrieved {datetime.now().strftime('%d %b %Y %H:%M EAT')} | tripplek.co.ke")
+    # Insights
+    if kit.get("insights"):
+        with st.expander("Market Insights"):
+            for line in kit["insights"].splitlines():
+                if line.strip():
+                    st.markdown(f"* {line.strip()}")
+
+    # Ad Copy
+    st.subheader("Ready-to-Use Ad Copy")
+    lines = [l.strip() for l in kit["copy"].splitlines() if l.strip()]
+    banners, social, hashtags = [], {}, ""
+    for line in lines:
+        if "BANNERS:" in line:
+            pass
+        elif "TikTok:" in line or "TIKTOK:" in line:
+            social["TikTok"] = line.split(":", 1)[1].strip()
+        elif "IG:" in line:
+            social["IG"] = line.split(":", 1)[1].strip()
+        elif "FB:" in line:
+            social["FB"] = line.split(":", 1)[1].strip()
+        elif "WHATSAPP:" in line.upper():
+            social["WhatsApp"] = line.split(":", 1)[1].strip()
+        elif line.startswith("#"):
+            hashtags = line
+        elif not any(k in line for k in ["BANNERS", "TIKTOK", "IG", "FB", "WHATSAPP", "HASHTAGS"]):
+            if len(banners) < 2:
+                banners.append(line)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Banner Text**")
+        for b in banners[:2]:
+            st.code(b, language="text")
+    with c2:
+        st.markdown("**Social Media Copy**")
+        st.text_area("TikTok", social.get("TikTok", ""), height=60, key="tt")
+        st.text_area("Instagram", social.get("IG", ""), height=70, key="ig")
+        st.text_area("Facebook", social.get("FB", ""), height=70, key="fb")
+        st.text_area("WhatsApp", social.get("WhatsApp", f"Get {phone} at Tripple K! Call {TRIPPLEK_PHONE}"), height=100, key="wa")
+        st.text_input("Hashtags", hashtags)
+
+    # Product Images
+    if use_web_data and results:
+        st.subheader("Product Images (Preview)")
+        with st.spinner("Checking retailer sites..."):
+            valid_images = []
+            for r in results[:5]:
+                if "tripplek" not in r["url"].lower():
+                    img_url = predict_image_url(phone, r["url"])
+                    if img_url and validate_image(img_url):
+                        valid_images.append({"url": r["url"], "img": img_url})
+                        if len(valid_images) >= 3:
+                            break
+            if valid_images:
+                cols = st.columns(3)
+                for i, item in enumerate(valid_images):
+                    with cols[i]:
+                        st.image(item["img"], use_container_width=True)
+                        st.caption(extract_retailer(item["url"]))
+            else:
+                st.caption("No product images found")
+
+    # --- DEBUG: Raw vs Filtered Results ---
+    if use_web_data and 'raw_searx_results' in st.session_state:
+        with st.expander("🔍 Raw vs Filtered Search Results"):
+            st.write(f"**Raw SearXNG Results**: {len(st.session_state['raw_searx_results'])}")
+            st.write(f"**Enriched Results**: {len(results)}")
+            tab1, tab2 = st.tabs(["Raw", "Enriched"])
+            with tab1:
+                st.json(st.session_state['raw_searx_results'])
+            with tab2:
+                st.json(results)
+
+st.divider()
+st.caption(f"Generated {datetime.now().strftime('%d %b %Y %H:%M EAT')} | Tripple K Communications | tripplek.co.ke")
