@@ -98,10 +98,27 @@ def extract_retailer(url: str) -> str:
     return retailer.capitalize() if retailer else "Unknown"
 
 def extract_slug_from_url(url: str) -> str:
-    """Extracts the final path segment of the URL."""
+    """Extracts the final path segment of the URL, cleaning up query params."""
     clean = url.split("?", 1)[0].split("#", 1)[0]
     parts = [p for p in clean.split("/") if p]
     return parts[-1].lower() if parts else ""
+
+def extract_date_from_content(content: str) -> str | None:
+    """
+    Uses Regex to extract a common date string from the snippet content.
+    Example: 'Jan 27, 2017', 'January 2025', '4 Sep 2025'
+    """
+    # Regex pattern to catch common month/year formats, regardless of case
+    date_match = re.search(
+        r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[uarychrilgustembto\.]{0,9}\s+\d{1,2},?\s*\d{4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[uarychrilgustembto\.]{0,9}\s+\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[uarychrilgustembto\.]{0,9}\s+\d{4}',
+        content,
+        re.IGNORECASE
+    )
+    if date_match:
+        # Return the matched string, letting the UI handle display
+        return date_match.group(0).strip()
+    return None
+
 
 def get_rule_based_image_urls(url: str) -> list[str]:
     """
@@ -113,20 +130,27 @@ def get_rule_based_image_urls(url: str) -> list[str]:
         return []
 
     try:
-        domain = urlparse(url).netloc
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc
+        path_segments = [p for p in parsed_url.path.split('/') if p]
     except:
-        domain = ""
+        return []
 
-    # Common WooCommerce patterns
+    # Get year/month from current date for WooCommerce upload path
+    y, m = CURRENT_YEAR, CURRENT_MONTH
+    
+    # Common WooCommerce/e-commerce patterns based on user feedback
     patterns = [
-        # Full slug image (most common)
-        f"https://{domain}/wp-content/uploads/{CURRENT_YEAR}/{CURRENT_MONTH}/{slug}.jpg",
-        # Full slug image with size suffix
-        f"https://{domain}/wp-content/uploads/{CURRENT_YEAR}/{CURRENT_MONTH}/{slug}-1024x1024.jpg",
-        # Using a previous year/month if current date fails
-        f"https://{domain}/wp-content/uploads/{int(CURRENT_YEAR)-1}/12/{slug}.jpg",
-        # Simple product image path (Avechi style slug-based)
-        f"https://{domain}/image/{slug}.jpg"
+        # 1. Standard WooCommerce Path (Current Month)
+        f"https://{domain}/wp-content/uploads/{y}/{m}/{slug}.jpg",
+        # 2. Standard WooCommerce Path (Current Month, lower resolution variant)
+        f"https://{domain}/wp-content/uploads/{y}/{m}/{slug}-800x800.jpg",
+        # 3. Standard WooCommerce Path (Previous Year December fallback)
+        f"https://{domain}/wp-content/uploads/{int(y)-1}/12/{slug}.jpg",
+        # 4. Avechi/simple "product" structure (often used by local sites)
+        f"https://{domain}/image/{slug}.jpg",
+        # 5. Simple slug with a known local path pattern (e.g. phonestablets.co.ke)
+        f"https://{domain}/wp-content/uploads/{slug}.jpg",
     ]
     
     # Filter out empty strings and duplicates
@@ -146,7 +170,7 @@ def fetch_kenyan_prices(phone: str) -> tuple[list[dict], dict]:
     online_instances = warm_up_searx()
     
     if not online_instances:
-        return [], {"instance": "N/A", "raw_count": 0}
+        return [], {"instance": "N/A", "raw_count": 0, "filtered_count": 0}
 
     # Try each online instance sequentially
     for instance in online_instances:
@@ -188,7 +212,12 @@ def fetch_kenyan_prices(phone: str) -> tuple[list[dict], dict]:
                     content = res.get("content", "") # NO TRIMMING
                     url = res.get("url", "")
                     search_text = f"{title} {content}".lower() 
+                    
                     published_date = res.get("publishedDate") # NEW: Extract date
+                    if not published_date:
+                        published_date = extract_date_from_content(content) # Fallback extraction
+
+                    engine = res.get("engine", "Unknown") # NEW: Extract engine
                     
                     # Price Extraction
                     price_match = re.search(
@@ -221,6 +250,7 @@ def fetch_kenyan_prices(phone: str) -> tuple[list[dict], dict]:
                         "stock": stock,
                         "retailer": extract_retailer(url),
                         "published_date": published_date,
+                        "engine": engine, # NEW FIELD
                     })
                 
                 metadata = {
@@ -234,7 +264,7 @@ def fetch_kenyan_prices(phone: str) -> tuple[list[dict], dict]:
             st.sidebar.warning(f"Search failed for {instance}. Trying next available search engine...")
             continue
     
-    return [], {"instance": "N/A", "raw_count": 0} 
+    return [], {"instance": "N/A", "raw_count": 0, "filtered_count": 0} 
 
 
 def render_price_table(results: list[dict]):
@@ -249,11 +279,12 @@ def render_price_table(results: list[dict]):
             rows.append({
                 "Price": r["price_ksh_str"],
                 "Retailer": r["retailer"],
-                "Date": r["published_date"] if r["published_date"] else "N/A", # NEW DATE FIELD
+                "Date": r["published_date"] if r["published_date"] else "N/A",
+                "Source": r["engine"].capitalize(),
                 "Link": r["url"],
                 "Stock": r["stock"],
                 "price_val": r["price_ksh_int"],
-                "title": r["title"], # NO TRIMMING
+                "title": r["title"], 
                 "is_rec": False
             })
 
@@ -273,6 +304,7 @@ def render_price_table(results: list[dict]):
             "Price": f"KSh {rec_price:,}",
             "Retailer": "Tripple K (Recommended)",
             "Date": now.strftime('%b %d, %Y'),
+            "Source": "Internal",
             "Link": "https://www.tripplek.co.ke",
             "Stock": "Available",
             "price_val": rec_price,
@@ -289,7 +321,8 @@ def render_price_table(results: list[dict]):
         "Price": r["Price"],
         "Date": r["Date"],
         "Stock": r["Stock"],
-        "Product Title": r["title"], # NO TRIMMING
+        "Source": r["Source"],
+        "Product Title": r["title"], 
         "Link": f"[View Link]({r['Link']})" if r['Link'].startswith('http') else "N/A"
     } for r in rows])
 
@@ -298,7 +331,7 @@ def render_price_table(results: list[dict]):
         df,
         use_container_width=True,
         hide_index=True,
-        column_order=["Retailer", "Price", "Date", "Stock", "Product Title", "Link"]
+        column_order=["Retailer", "Price", "Date", "Stock", "Source", "Product Title", "Link"]
     )
 
 
@@ -309,7 +342,10 @@ def render_image_previews(results: list[dict]):
         valid_images = []
         checked_urls = set()
         
-        for r in results:
+        # Check only the top 5 price-bearing results for image URLs
+        top_results_with_price = [r for r in results if r['price_ksh_int'] > 0][:5]
+        
+        for r in top_results_with_price:
             if len(valid_images) >= 3:
                 break
                 
@@ -358,6 +394,8 @@ with st.sidebar:
     This is a **Minimal, Non-AI** price comparison tool for Tripple K Communications.
     
     It retrieves live competitor pricing from Kenyan e-commerce sites to help set a competitive Tripple K price.
+    
+    **Timeout:** 60 seconds per instance.
     """)
     st.divider()
     st.caption("Tripple K Communications")
@@ -415,10 +453,10 @@ if st.session_state['results']:
     render_image_previews(st.session_state['results'])
     
     # --- Display Raw Data for Debugging/Transparency ---
-    st.subheader("Raw Data Snippets")
+    st.subheader("Raw Data Snippets (Full Content)")
     with st.expander("Click to view full snippets from the raw search results (for debugging)"):
         for i, r in enumerate(st.session_state['results']):
-            st.markdown(f"**{i+1}. {r['retailer']}** (`{r['price_ksh_str']}`) - Stock: {r['stock']} - Date: {r['published_date']}")
+            st.markdown(f"**{i+1}. {r['retailer']}** (`{r['price_ksh_str']}`) - Stock: {r['stock']} - Date: {r['published_date']} - Source: {r['engine'].capitalize()}")
             st.caption(f"**URL:** {r['url']}")
             st.caption(f"**Title:** {r['title']}")
             st.markdown(f"*{r['content']}*")
