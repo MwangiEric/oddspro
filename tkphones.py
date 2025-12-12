@@ -116,10 +116,10 @@ def extract_slug_from_url(url: str) -> str:
 
 
 def predict_image_url(phone: str, url: str) -> str:
-    """SMART: Uses Groq to predict likely product image URL with dynamic date."""
+    """Uses Groq to predict likely product image URL with dynamic date."""
     slug = extract_slug_from_url(url)
     
-    # 💡 SMART: Inject current year and month for more accurate WooCommerce/WP path prediction
+    # Inject current year and month for more accurate WooCommerce/WP path prediction
     prompt = f"""Product: {phone}
 URL: {url}
 Slug: {slug}
@@ -168,6 +168,7 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
             r = requests.get(
                 instance,
                 params={
+                    # Retain localization query
                     "q": f'"{phone}" price Kenya',
                     "format": "json",
                     "language": "en",
@@ -178,7 +179,20 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
             )
             
             if r.status_code == 200:
-                results = r.json().get("results", [])[:60]
+                raw_results = r.json().get("results", [])
+                
+                # SMART FILTER: Prioritize TLDs and known Kenyan retailers
+                kenyan_indicators = ['.ke', 'jumia.co.ke', 'kilimall.co.ke', 'tripplek.co.ke'] 
+                
+                filtered_results = []
+                for res in raw_results:
+                    url = res.get("url", "").lower()
+                    # Filter for Kenyan URLs
+                    if any(indicator in url for indicator in kenyan_indicators):
+                        filtered_results.append(res)
+                
+                # Use filtered results, capping at 60
+                results = filtered_results[:60]
                 
                 enriched = []
                 for res in results:
@@ -186,7 +200,6 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                     content = res.get("content", "")
                     url = res.get("url", "")
                     
-                    # 💡 SMART: Only search title and content for price, not URL, for higher accuracy
                     search_text = f"{title} {content}".lower() 
                     
                     price_match = re.search(
@@ -201,7 +214,7 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                         clean_price = re.sub(r"[^\d]", "", price_match.group(1))
                         if clean_price.isdigit():
                             price_int = int(clean_price)
-                            price_str = f"KSh {price_int:,}" # Formatted string for display
+                            price_str = f"KSh {price_int:,}" 
                     
                     stock = "In stock"
                     if any(w in search_text for w in ["out of stock", "sold out", "unavailable"]):
@@ -214,9 +227,9 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                         "url": url,
                         "content": content[:300],
                         "price_ksh_str": price_str,
-                        "price_ksh_int": price_int, # 💡 SMART: Store the numeric value for later calculations
+                        "price_ksh_int": price_int,
                         "stock": stock,
-                        "retailer": extract_retailer(url) # 💡 SMART: Extract retailer early
+                        "retailer": extract_retailer(url)
                     })
                 
                 return enriched
@@ -230,7 +243,6 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
 
 def generate_with_data(phone: str, results: list[dict], persona: str, tone: str) -> dict:
     context_lines = []
-    # 💡 SMART: Build context with retailer name included
     for r in results:
         price = f" | {r['price_ksh_str']}" if r["price_ksh_str"] else ""
         context_lines.append(
@@ -242,6 +254,7 @@ def generate_with_data(phone: str, results: list[dict], persona: str, tone: str)
         )
     web_context = "\n".join(context_lines) if context_lines else "No data"
     
+    # 💡 FIX: Make prompt stricter and reduce temperature to improve format adherence
     prompt = f"""You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
 
 TRIPPLE K VALUE PROPS (mention in copy):
@@ -259,7 +272,7 @@ TONE: {tone}
 MARKET DATA:
 {web_context}
 
-OUTPUT 4 SECTIONS:
+OUTPUT EXACTLY 4 SECTIONS, each starting with the required marker:
 
 ---PRICE---
 List: "Retailer - KSh X,XXX - URL" for each result with price. Include the retailer name from the context.
@@ -284,7 +297,7 @@ Plain text only. Use real data."""
         comp = client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.6,
+            temperature=0.5, # Lowered temperature for structured output
             max_tokens=2400,
             timeout=50
         )
@@ -293,7 +306,8 @@ Plain text only. Use real data."""
         
         parts = raw.split("---PRICE---")
         if len(parts) < 2:
-            return {"error": "Invalid format from AI. Missing ---PRICE---"}
+            # Added more context to the error message
+            return {"error": f"Invalid format from AI. Missing ---PRICE--- marker in output: \n{raw[:500]}..."}
         
         rest = parts[1]
         price_block = rest.split("---SPECS---")[0].strip() if "---SPECS---" in rest else ""
@@ -302,7 +316,7 @@ Plain text only. Use real data."""
         specs_block = rest.split("---INSIGHTS---")[0].strip() if "---INSIGHTS---" in rest else ""
         
         rest = rest.split("---INSIGHTS---", 1)[1] if "---INSIGHTS---" in rest else ""
-        insights_block = rest.split("---COPY---")[0].strip() if "---COPY---" in rest else ""
+        insights_block = rest.split("---COPY---")[0].strip() if "---INSIGHTS---" in rest else ""
         
         copy_block = rest.split("---COPY---", 1)[1].strip() if "---COPY---" in rest else ""
         
@@ -318,7 +332,6 @@ Plain text only. Use real data."""
 
 
 def generate_without_data(phone: str, persona: str, tone: str) -> dict:
-    # (function remains largely the same, focusing on trust/value props)
     prompt = f"""You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
 
 Create marketing copy for:
@@ -422,10 +435,10 @@ if st.button("Generate Marketing Kit", type="primary"):
             results = fetch_kenyan_prices(phone)
             
             if not results:
-                st.warning("No web data found. Generating AI-only copy...")
+                st.warning("No relevant Kenyan web data found. Generating AI-only copy...")
                 use_web_data = False
             else:
-                st.write(f"Found {len(results)} listings")
+                st.write(f"Found {len(results)} relevant Kenyan listings")
         
         st.write("Generating marketing content...")
         
@@ -462,12 +475,12 @@ if st.button("Generate Marketing Kit", type="primary"):
         rows = []
         prices_numeric_for_calc = [r["price_ksh_int"] for r in results if r["price_ksh_int"] > 0]
         
-        # 💡 SMART: Add competitor listings
+        # Add competitor listings
         for i, line in enumerate(price_lines):
             parts = line.split(" - ")
             if len(parts) >= 3:
                 price_str = parts[1]
-                # Try to find the matching original result for stock info
+                # Find the matching original result for stock info by price string (robust link)
                 match = next((r for r in results if r["price_ksh_str"] == price_str), None)
                 
                 rows.append({
@@ -479,20 +492,19 @@ if st.button("Generate Marketing Kit", type="primary"):
                     "is_rec": False
                 })
         
-        # 💡 SMART: Calculate statistically derived recommended price
+        # Calculate statistically derived recommended price
         if prices_numeric_for_calc:
             price_series = pd.Series(prices_numeric_for_calc)
             
             # Use 75th percentile as a high-value competitive price base
             rec_price_base = price_series.quantile(0.75)
             
-            # Apply a competitive markdown and round to the nearest 100
-            # E.g., 25,937 -> (25,937 - 500) = 25,437 -> round(25,437/100)*100 = 25,400
+            # Apply a competitive markdown and round to the nearest 100 for a clean price
             rec_price = int(round((rec_price_base - 500) / 100) * 100)
             
             # Fallback check: Ensure the price is not unreasonably low
             min_comp_price = price_series.min()
-            if rec_price < min_comp_price * 0.90: # If price is more than 10% below lowest competitor, set it competitively close to the lowest.
+            if rec_price < min_comp_price * 0.90: 
                 rec_price = int(round((min_comp_price - 100) / 100) * 100)
             
             # Add recommended price to the table
