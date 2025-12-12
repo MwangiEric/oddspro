@@ -292,7 +292,7 @@ def generate_marketing_with_data(phone: str, web_context: str, persona: str, ton
     - Accredited distributor of original brands
     - Full manufacturer warranty
     - Pay on delivery available
-    {CHRISTMAS_HOOK}" if {CHRISTMAS_HOOK}
+    {CHRISTMAS_HOOK} if {CHRISTMAS_HOOK}
     INPUT:
     PHONE: {phone}
     TARGET PERSONA: {persona}
