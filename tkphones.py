@@ -18,10 +18,12 @@ client = Groq(api_key=GROQ_KEY)
 
 # Multiple SearXNG instances for failover
 SEARX_INSTANCES = [
-    "https://searxng-587s.onrender.com/search",
+    
     "https://searx.be/search",
     "https://search.ononoki.org/search",
     "https://searxng.site/search",
+    "https://search.bladerunn.in/search",
+    "https://searxng-587s.onrender.com/search"
 ]
 
 MODEL = "llama-3.1-8b-instant"
