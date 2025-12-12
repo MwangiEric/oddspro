@@ -254,7 +254,7 @@ RULES:
 
 ############################ STREAMLIT UI ####################################
 inject_brand_css()
-st.title("ðŸ"± Tripple K Phone Ad Generator")
+st.title(" Tripple K Phone Ad Generator")
 st.caption("Data-Driven Marketing Kits | www.tripplek.co.ke")
 
 if is_christmas:
@@ -325,7 +325,7 @@ if st.button("ðŸš€ Generate Marketing Kit", type="primary"):
     
     # Specs
     if kit["specs"]:
-        st.subheader("ðŸ"± Key Specs")
+        st.subheader(" Key Specs")
         st.text(kit["specs"])
     
     # Insights
