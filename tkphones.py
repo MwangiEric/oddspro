@@ -39,6 +39,8 @@ if 'results' not in st.session_state:
     st.session_state['results'] = []
 if 'phone' not in st.session_state:
     st.session_state['phone'] = ""
+if 'search_metadata' not in st.session_state:
+    st.session_state['search_metadata'] = {}
 
 
 def inject_brand_css():
@@ -95,14 +97,56 @@ def extract_retailer(url: str) -> str:
     retailer = domain.split(".")[0]
     return retailer.capitalize() if retailer else "Unknown"
 
+def extract_slug_from_url(url: str) -> str:
+    """Extracts the final path segment of the URL."""
+    clean = url.split("?", 1)[0].split("#", 1)[0]
+    parts = [p for p in clean.split("/") if p]
+    return parts[-1].lower() if parts else ""
 
-def fetch_kenyan_prices(phone: str) -> list[dict]:
+def get_rule_based_image_urls(url: str) -> list[str]:
+    """
+    Generates a list of likely image URLs based on common e-commerce/WooCommerce patterns
+    and the product slug from the URL. No AI used.
+    """
+    slug = extract_slug_from_url(url)
+    if not slug:
+        return []
+
+    try:
+        domain = urlparse(url).netloc
+    except:
+        domain = ""
+
+    # Common WooCommerce patterns
+    patterns = [
+        # Full slug image (most common)
+        f"https://{domain}/wp-content/uploads/{CURRENT_YEAR}/{CURRENT_MONTH}/{slug}.jpg",
+        # Full slug image with size suffix
+        f"https://{domain}/wp-content/uploads/{CURRENT_YEAR}/{CURRENT_MONTH}/{slug}-1024x1024.jpg",
+        # Using a previous year/month if current date fails
+        f"https://{domain}/wp-content/uploads/{int(CURRENT_YEAR)-1}/12/{slug}.jpg",
+        # Simple product image path (Avechi style slug-based)
+        f"https://{domain}/image/{slug}.jpg"
+    ]
+    
+    # Filter out empty strings and duplicates
+    return list(set([p for p in patterns if p.startswith('http')]))
+
+def validate_image(url: str) -> bool:
+    """Checks if a URL points to a valid, accessible image."""
+    try:
+        # Reduced timeout for image check, since a failure here is not critical
+        r = requests.head(url, timeout=5, headers=HEADERS)
+        return r.status_code == 200 and "image" in r.headers.get("content-type", "").lower()
+    except:
+        return False
+
+def fetch_kenyan_prices(phone: str) -> tuple[list[dict], dict]:
     
     online_instances = warm_up_searx()
     
     if not online_instances:
-        st.error(f"All search API instances are currently unavailable.")
-        return []
+        return [], {"instance": "N/A", "raw_count": 0}
 
     # Try each online instance sequentially
     for instance in online_instances:
@@ -117,13 +161,14 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                     "safesearch": "0"
                 },
                 headers=HEADERS,
-                timeout=45 # High timeout as requested
+                timeout=60 # Increased timeout to 60 seconds
             )
             
             if r.status_code == 200:
-                raw_results = r.json().get("results", [])
+                raw_data = r.json()
+                raw_results = raw_data.get("results", [])
                 
-                # --- CHANGE IMPLEMENTED HERE ---
+                # --- FILTERING LOGIC ---
                 # SMART FILTER: Only searching for 'ke' string in URL
                 kenyan_indicators = ['ke'] 
                 
@@ -135,13 +180,15 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                         filtered_results.append(res)
                 # -----------------------------
                 
-                results = filtered_results[:60]
+                # NO RESULT LIMIT
+                results = filtered_results 
                 enriched = []
                 for res in results:
-                    title = res.get("title", "")
-                    content = res.get("content", "")
+                    title = res.get("title", "") # NO TRIMMING
+                    content = res.get("content", "") # NO TRIMMING
                     url = res.get("url", "")
                     search_text = f"{title} {content}".lower() 
+                    published_date = res.get("publishedDate") # NEW: Extract date
                     
                     # Price Extraction
                     price_match = re.search(
@@ -166,22 +213,28 @@ def fetch_kenyan_prices(phone: str) -> list[dict]:
                         stock = "Limited stock"
                     
                     enriched.append({
-                        "title": title[:180],
+                        "title": title,
                         "url": url,
-                        "content": content[:300],
+                        "content": content,
                         "price_ksh_str": price_str,
                         "price_ksh_int": price_int,
                         "stock": stock,
-                        "retailer": extract_retailer(url)
+                        "retailer": extract_retailer(url),
+                        "published_date": published_date,
                     })
                 
-                return enriched
+                metadata = {
+                    "instance": instance,
+                    "raw_count": len(raw_results),
+                    "filtered_count": len(filtered_results)
+                }
+                return enriched, metadata
                 
         except Exception as e:
             st.sidebar.warning(f"Search failed for {instance}. Trying next available search engine...")
             continue
     
-    return [] 
+    return [], {"instance": "N/A", "raw_count": 0} 
 
 
 def render_price_table(results: list[dict]):
@@ -196,10 +249,11 @@ def render_price_table(results: list[dict]):
             rows.append({
                 "Price": r["price_ksh_str"],
                 "Retailer": r["retailer"],
+                "Date": r["published_date"] if r["published_date"] else "N/A", # NEW DATE FIELD
                 "Link": r["url"],
                 "Stock": r["stock"],
                 "price_val": r["price_ksh_int"],
-                "title": r["title"],
+                "title": r["title"], # NO TRIMMING
                 "is_rec": False
             })
 
@@ -208,7 +262,6 @@ def render_price_table(results: list[dict]):
     if prices_numeric_for_calc:
         price_series = pd.Series(prices_numeric_for_calc)
         
-        # Calculation logic for recommended price
         rec_price_base = price_series.quantile(0.75)
         rec_price = int(round((rec_price_base - 500) / 100) * 100)
         
@@ -219,6 +272,7 @@ def render_price_table(results: list[dict]):
         rows.append({
             "Price": f"KSh {rec_price:,}",
             "Retailer": "Tripple K (Recommended)",
+            "Date": now.strftime('%b %d, %Y'),
             "Link": "https://www.tripplek.co.ke",
             "Stock": "Available",
             "price_val": rec_price,
@@ -233,9 +287,9 @@ def render_price_table(results: list[dict]):
     df = pd.DataFrame([{
         "Retailer": r["Retailer"],
         "Price": r["Price"],
+        "Date": r["Date"],
         "Stock": r["Stock"],
-        "Product Title": r["title"] if r["is_rec"] else r["title"][:50] + "...",
-        # Use Markdown links in a helper column for a clickable link in the dataframe
+        "Product Title": r["title"], # NO TRIMMING
         "Link": f"[View Link]({r['Link']})" if r['Link'].startswith('http') else "N/A"
     } for r in rows])
 
@@ -244,7 +298,54 @@ def render_price_table(results: list[dict]):
         df,
         use_container_width=True,
         hide_index=True,
+        column_order=["Retailer", "Price", "Date", "Stock", "Product Title", "Link"]
     )
+
+
+def render_image_previews(results: list[dict]):
+    st.subheader("Product Images (Rule-Based Preview)")
+    
+    with st.spinner("Attempting rule-based image detection..."):
+        valid_images = []
+        checked_urls = set()
+        
+        for r in results:
+            if len(valid_images) >= 3:
+                break
+                
+            # Skip checking the recommended URL for images
+            if "tripplek.co.ke" in r["url"].lower():
+                continue
+                
+            # Generate image possibilities based on the retailer's URL structure
+            possible_urls = get_rule_based_image_urls(r["url"])
+            
+            for img_url in possible_urls:
+                if img_url not in checked_urls and len(valid_images) < 3:
+                    checked_urls.add(img_url)
+                    if validate_image(img_url):
+                        valid_images.append({"url": r["url"], "img": img_url})
+                        break # Found one image for this retailer, move to next retailer
+
+        if valid_images:
+            cols = st.columns(3)
+            for i, item in enumerate(valid_images):
+                if i < 3:
+                    with cols[i]:
+                        st.image(item["img"], use_container_width=True)
+                        st.caption(f"Source: {extract_retailer(item['url'])}")
+        else:
+            st.caption("No valid product images found based on common e-commerce URL patterns.")
+
+# UI elements for displaying metadata
+def render_metadata(metadata: dict):
+    if metadata:
+        c1, c2, c3 = st.columns(3)
+        
+        c1.metric("Search Instance Used", metadata.get("instance", "N/A"))
+        c2.metric("Total Raw Results", metadata.get("raw_count", 0))
+        c3.metric("Filtered Kenyan Results", metadata.get("filtered_count", 0))
+    st.markdown("---")
 
 
 ############################ STREAMLIT UI ####################################
@@ -274,16 +375,18 @@ if st.button("Search Kenyan Prices", type="primary"):
         st.error("Please enter a phone model")
     else:
         st.session_state['phone'] = phone_input
+        st.session_state['search_metadata'] = {}
         
-        with st.status("Searching Kenyan retailers (max 45s wait per instance)...", expanded=True) as status:
-            results = fetch_kenyan_prices(phone_input)
+        with st.status("Searching Kenyan retailers (max 60s wait per instance)...", expanded=True) as status:
+            results, metadata = fetch_kenyan_prices(phone_input)
             
             if not results:
                 st.warning("No relevant Kenyan web data found or all search APIs are unreachable.")
             else:
-                st.write(f"Found {len(results)} total listings.")
+                st.write(f"Found {len(results)} total filtered listings.")
 
             st.session_state['results'] = results
+            st.session_state['search_metadata'] = metadata
             status.update(label="Search Complete!", state="complete", expanded=False)
             
             st.rerun() 
@@ -294,6 +397,8 @@ if st.session_state['results']:
     phone = st.session_state.get('phone', phone_input)
     st.markdown(f"## {phone} - Price Analysis")
     
+    render_metadata(st.session_state['search_metadata'])
+
     prices_numeric = [r["price_ksh_int"] for r in st.session_state['results'] if r["price_ksh_int"] > 0]
     
     if prices_numeric:
@@ -306,11 +411,14 @@ if st.session_state['results']:
     st.subheader("Competitor Price Comparison")
     render_price_table(st.session_state['results'])
     
+    # --- Image Preview Section ---
+    render_image_previews(st.session_state['results'])
+    
     # --- Display Raw Data for Debugging/Transparency ---
     st.subheader("Raw Data Snippets")
-    with st.expander("Click to view snippets from the raw search results (for debugging)"):
+    with st.expander("Click to view full snippets from the raw search results (for debugging)"):
         for i, r in enumerate(st.session_state['results']):
-            st.markdown(f"**{i+1}. {r['retailer']}** (`{r['price_ksh_str']}`) - Stock: {r['stock']}")
+            st.markdown(f"**{i+1}. {r['retailer']}** (`{r['price_ksh_str']}`) - Stock: {r['stock']} - Date: {r['published_date']}")
             st.caption(f"**URL:** {r['url']}")
             st.caption(f"**Title:** {r['title']}")
             st.markdown(f"*{r['content']}*")
