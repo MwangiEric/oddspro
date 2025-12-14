@@ -14,7 +14,7 @@ GROQ_KEY = st.secrets.get("groq_key", "")
 client = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
 # WARNING: "llama-3.1-8b-instant" is NOT a valid Groq model.
 # Use one of: "llama3-8b-8192", "llama3-70b-8192", "llama3-1b-8192"
-MODEL = "llama3-8b-8192"  # ✅ Valid Groq model
+MODEL = "llama-3.1-8b-instant"  # ✅ Valid Groq model
 
 BRAND_MAROON = "#8B0000"
 TRIPPLEK_PHONE = "+254700123456"
