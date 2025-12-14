@@ -97,7 +97,7 @@ def safe_api_call(url: str):
 # ----------------------------
 def time_since_release(status: str) -> str:
     try:
-        clean = status.replace("Released ", "").strip()
+        clean = status.replace("Released", "").strip()
         date = parser.parse(clean)
         days = (datetime.now() - date).days
         if days < 0: return "Not released"
