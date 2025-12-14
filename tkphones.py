@@ -31,17 +31,53 @@ h1, h2, h3 {{ color: {BRAND_MAROON} !important; }}
     color: white;
     font-weight: bold;
     border-radius: 8px;
+    margin-top: 0.3rem;
+}}
+.copy-btn {{
+    background: #4CAF50; color: white; border: none; padding: 6px 12px;
+    border-radius: 4px; cursor: pointer; font-size: 0.9rem;
 }}
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------------------
+# SAFE API CALLS
+# ----------------------------
+def safe_api_call(url: str):
+    try:
+        res = requests.get(url, timeout=12)
+        if res.status_code != 200:
+            return None, f"HTTP {res.status_code}"
+        # Check if response is JSON
+        try:
+            return res.json(), None
+        except ValueError:
+            return None, "Invalid JSON (possibly HTML error page)"
+    except requests.exceptions.RequestException as e:
+        return None, f"Network error: {str(e)}"
+
+def fetch_search_results(query: str):
+    url = f"https://tkphsp2.vercel.app/gsm/search?q={requests.utils.quote(query)}"
+    data, err = safe_api_call(url)
+    if err:
+        return None, f"Search failed: {err}"
+    if not isinstance(data, list):
+        return None, "Unexpected API response format"
+    return data, None
+
+def fetch_phone_details(phone_id: str):
+    url = f"https://tkphsp2.vercel.app/gsm/info/{phone_id}"
+    data, err = safe_api_call(url)
+    if err:
+        return None, f"Detail fetch failed: {err}"
+    return data, None
+
+# ----------------------------
 # HELPERS
 # ----------------------------
-def time_since_release(release_str: str) -> str:
+def time_since_release(status: str) -> str:
     try:
-        # Parse "2025, February 03"
-        clean = release_str.replace("Released ", "").strip()
+        clean = status.replace("Released ", "").strip()
         date = parser.parse(clean)
         delta = datetime.now() - date
         days = delta.days
@@ -50,36 +86,13 @@ def time_since_release(release_str: str) -> str:
         elif days < 7:
             return f"{days} day{'s' if days != 1 else ''} in market"
         elif days < 30:
-            weeks = days // 7
-            return f"{weeks} week{'s' if weeks != 1 else ''} in market"
+            return f"{days // 7} week{'s' if days // 7 != 1 else ''} in market"
         elif days < 365:
-            months = days // 30
-            return f"{months} month{'s' if months != 1 else ''} in market"
+            return f"{days // 30} month{'s' if days // 30 != 1 else ''} in market"
         else:
-            years = days // 365
-            return f"{years} year{'s' if years != 1 else ''} in market"
+            return f"{days // 365} year{'s' if days // 365 != 1 else ''} in market"
     except:
-        return "Unknown release date"
-
-def fetch_phone_specs(query: str):
-    try:
-        search_res = requests.get(f"https://tkphsp2.vercel.app/gsm/search?q={query}", timeout=10)
-        search_res.raise_for_status()
-        results = search_res.json()
-        if not results:
-            return None, "No results found", []
-        return results, None, results
-    except Exception as e:
-        return None, f"Search failed: {str(e)}", []
-
-def get_full_specs(phone_id: str):
-    try:
-        detail_res = requests.get(f"https://tkphsp2.vercel.app/gsm/info/{phone_id}", timeout=10)
-        detail_res.raise_for_status()
-        return detail_res.json()
-    except Exception as e:
-        st.error(f"Detail fetch error: {e}")
-        return None
+        return "Unknown"
 
 def parse_specs(raw):
     ram = storage = "N/A"
@@ -95,7 +108,7 @@ def parse_specs(raw):
 
     return {
         "name": raw["name"],
-        "cover": raw.get("image", "").strip(),
+        "cover": raw.get("image", "").strip() or raw.get("cover", "").strip(),
         "screen": f"{raw['display']['size']} ({raw['display']['resolution']})",
         "ram": ram,
         "storage": storage,
@@ -107,10 +120,16 @@ def parse_specs(raw):
         "raw": raw
     }
 
+def copy_button(text: str, label: str = "📋 Copy"):
+    escaped = text.replace("`", "\\`").replace("\n", "\\n").replace('"', '\\"')
+    st.markdown(f"""
+    <button class="copy-btn" onclick='navigator.clipboard.writeText("{escaped}")'>{label}</button>
+    """, unsafe_allow_html=True)
+
 # ----------------------------
-# GROQ PROMPT
+# GROQ
 # ----------------------------
-def generate_social_post(phone_data: dict, persona: str, tone: str):
+def generate_social_post(phone_ dict, persona: str, tone: str):
     name = phone_data["name"]
     specs = phone_data["raw"]
     prompt = f"""
@@ -123,24 +142,20 @@ TONE: {tone}
 FULL SPECS:
 {specs}
 
-TRIPPLE K VALUE PROPS (mention at least 2):
+TRIPPLE K VALUE PROPS (must mention at least 2):
 - Accredited distributor → 100% genuine phones
 - Official manufacturer warranty
 - Pay on delivery
 - Fast Nairobi delivery
 - Call {TRIPPLEK_PHONE} or visit {TRIPPLEK_URL}
 
-TASK: Generate playful, platform-optimized social posts for Kenya.
-
-OUTPUT FORMAT:
+Generate platform-specific posts in this exact format:
 
 TikTok: [1 fun line <120 chars]
-WhatsApp: [2-3 lines with phone number, warranty, delivery]
+WhatsApp: [2-3 lines. Include phone number, warranty, delivery]
 Facebook: [3-4 engaging sentences]
-Instagram: [2-3 lifestyle-focused lines]
+Instagram: [2-3 stylish lines]
 Hashtags: #TrippleK #TrippleKKE #PhoneDealsKE
-
-Plain text only.
     """
     try:
         chat = client.chat.completions.create(
@@ -157,51 +172,52 @@ Plain text only.
 # UI
 # ----------------------------
 st.title("📱 Tripple K Phone Specs & Ad Generator")
-st.caption("Powered by GSM Arena + Groq AI | www.tripplek.co.ke")
+st.caption("Get specs → Generate & copy social posts for Tripple K")
 
 phone_query = st.text_input("🔍 Search a phone (e.g., Tecno Spark 20)", "")
 
 if st.button("Get Phones"):
-    if not phone_query:
+    if not phone_query.strip():
         st.error("Enter a phone name")
     else:
-        results, err, raw_results = fetch_phone_specs(phone_query)
+        results, err = fetch_search_results(phone_query)
         if err:
             st.error(err)
         else:
             st.session_state["search_results"] = results
-            st.session_state["raw_search"] = raw_results
 
-# Show selection dropdown if results exist
 if "search_results" in st.session_state:
     names = [r["name"] for r in st.session_state["search_results"]]
-    selected_name = st.selectbox("Choose phone:", names, index=0)
+    selected_name = st.selectbox("Select phone:", names, index=0)
     selected = next(r for r in st.session_state["search_results"] if r["name"] == selected_name)
 
-    # Fetch full specs
-    full_specs = get_full_specs(selected["id"])
-    if not full_specs:
+    details, err = fetch_phone_details(selected["id"])
+    if err:
+        st.error(err)
         st.stop()
 
-    # Parse and save
-    clean = parse_specs(full_specs)
+    clean = parse_specs(details)
     st.session_state["current_phone"] = clean
 
-    # Display
+    # BIG TITLE + LAUNCH INFO
     st.markdown(f'<h1 style="color:{BRAND_MAROON};">{clean["name"]}</h1>', unsafe_allow_html=True)
-
-    # Launch info
     launched = clean["launched"]
     announced = launched.get("announced", "N/A")
     status = launched.get("status", "N/A")
     market_duration = time_since_release(status) if "Released" in status else "Not released"
     st.caption(f"Announced: {announced} | {market_duration}")
 
+    # IMAGE + SPECS
     col1, col2 = st.columns([1, 1.5])
     with col1:
-        st.image(clean["cover"], use_container_width=True)
-        img_data = requests.get(clean["cover"]).content
-        st.download_button("💾 Download Image", img_data, f"{clean['name']}.jpg")
+        img_url = clean["cover"]
+        if img_url:
+            st.image(img_url, use_container_width=True)
+            try:
+                img_data = requests.get(img_url, timeout=10).content
+                st.download_button("💾 Download Image", img_data, f"{clean['name']}.jpg")
+            except:
+                st.caption("Image download unavailable")
     with col2:
         spec_lines = [
             f"🖥️ **Screen**: {clean['screen']}",
@@ -216,34 +232,55 @@ if "search_results" in st.session_state:
         st.markdown(spec_text)
         st.code(spec_text, language="text")
 
-    with st.expander("📊 Full Specs (JSON)"):
-        st.json(clean["raw"])
+    # GROQ SECTION
+    if client:
+        st.divider()
+        st.subheader("📣 Generate Social Posts")
 
-    # --- Groq Section ---
-    st.divider()
-    st.subheader("📣 Generate Social Posts")
+        persona = st.selectbox(
+            "🎯 Target Persona",
+            ["All Kenyan buyers", "Budget students", "Tech-savvy professionals", "Camera creators", "Business executives"],
+            index=0
+        )
+        tone = st.selectbox("🎨 Brand Tone", ["Playful", "Rational", "Luxury", "FOMO"], index=0)
 
-    persona = st.selectbox(
-        "🎯 Target Persona",
-        [
-            "All Kenyan buyers",
-            "Budget students",
-            "Tech-savvy professionals",
-            "Camera creators",
-            "Business executives"
-        ],
-        index=0
-    )
-    tone = st.selectbox(
-        "🎨 Brand Tone",
-        ["Playful", "Rational", "Luxury", "FOMO"],
-        index=0
-    )
+        if st.button("✨ Generate with Groq"):
+            with st.spinner("Generating..."):
+                raw_copy = generate_social_post(clean, persona, tone)
+                st.session_state["social_copy"] = raw_copy
 
-    if client and st.button("✨ Generate with Groq (Llama 3.2 1B)"):
-        with st.spinner("Generating..."):
-            ad_copy = generate_social_post(clean, persona, tone)
-            st.text_area("Posts", ad_copy, height=300)
+    # DISPLAY SOCIAL POSTS WITH COPY BUTTONS
+    if "social_copy" in st.session_state:
+        st.divider()
+        st.subheader("📤 Copy to Social Media")
+        raw = st.session_state["social_copy"]
+        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        posts = {"TikTok": "", "WhatsApp": "", "Facebook": "", "Instagram": "", "Hashtags": ""}
+        current = None
+        for line in lines:
+            if line.startswith("TikTok:"):
+                current = "TikTok"
+                posts[current] = line.replace("TikTok:", "").strip()
+            elif line.startswith("WhatsApp:"):
+                current = "WhatsApp"
+                posts[current] = line.replace("WhatsApp:", "").strip()
+            elif line.startswith("Facebook:"):
+                current = "Facebook"
+                posts[current] = line.replace("Facebook:", "").strip()
+            elif line.startswith("Instagram:"):
+                current = "Instagram"
+                posts[current] = line.replace("Instagram:", "").strip()
+            elif line.startswith("Hashtags:"):
+                current = "Hashtags"
+                posts[current] = line.replace("Hashtags:", "").strip()
+            elif current:
+                posts[current] += " " + line
 
+        for plat, text in posts.items():
+            if text:
+                st.text_area(f"{plat}", text, height=80, key=f"ta_{plat}")
+                copy_button(text, f"📋 Copy {plat}")
+
+# FOOTER
 st.divider()
 st.caption(f"© Tripple K Communications | {TRIPPLEK_URL}")
