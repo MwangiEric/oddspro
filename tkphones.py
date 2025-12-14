@@ -14,7 +14,7 @@ import io
 # ----------------------------
 GROQ_KEY = st.secrets.get("groq_key", "")
 client = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
-MODEL = "llama-3.3-70b-versatile"  # ✅ Confirmed valid Groq model
+MODEL = "llama-3.3-70b-versatile"  # Confirmed Groq model
 
 BRAND_MAROON = "#8B0000"
 BRAND_GREEN = "#4CAF50"
@@ -47,10 +47,9 @@ h1, h2, h3 {{ color: {BRAND_MAROON} !important; }}
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# PROMPT BUILDER
+# PROMPT BUILDER (structured for parsing)
 # ----------------------------
 def build_groq_prompt(phone_dict: dict, persona: str, tone: str) -> str:
-    # Extract unique features
     features = []
     if "water" in str(phone_dict["raw"]).lower() or "IP" in str(phone_dict["raw"]):
         features.append("water-resistant")
@@ -58,28 +57,28 @@ def build_groq_prompt(phone_dict: dict, persona: str, tone: str) -> str:
         features.append("120Hz display")
     if "5000" in phone_dict["battery"]:
         features.append("5000mAh battery")
-    if "50 MP" in phone_dict["camera"]:
+    if "50 MP" in phone_dict["main_camera"]:
         features.append("50MP main camera")
-    feature_str = ", ".join(features) if features else "great performance and value"
+    feature_str = ", ".join(features) if features else "great performance"
 
     return f"""
 You are the marketing AI for Tripple K Communications (www.tripplek.co.ke).
 
 Phone: {phone_dict['name']}
-Key specs: Screen {phone_dict['screen']}, RAM {phone_dict['ram']}, Storage {phone_dict['storage']}, Battery {phone_dict['battery']}, Camera {phone_dict['camera']}
+Key specs: Screen {phone_dict['screen']}, RAM {phone_dict['ram']}, Storage {phone_dict['storage']}, Battery {phone_dict['battery']}, Main Camera {phone_dict['main_camera']}, Selfie Camera {phone_dict['selfie_camera']}
 Unique features: {feature_str}
 Persona: {persona}
 Tone: {tone}
 
-Mention Tripple K value props subtly (e.g., "available with warranty from Tripple K", "pay on delivery", "Nairobi delivery").
-Do NOT list all specs — highlight what matters most for the platform.
+Mention Tripple K value props subtly (e.g., "available with warranty from Tripple K", "pay on delivery in Nairobi").
+Do NOT use emojis or markdown. Keep each field as a single line.
 
-Generate in this exact format:
+Output in this exact format:
 
-TikTok: [1 exciting line under 120 chars]
-WhatsApp: [2-3 lines including {TRIPPLEK_PHONE}, warranty, delivery]
-Facebook: [3-4 sentences for general audience]
-Instagram: [2-3 stylish lines]
+TikTok: [single line under 120 chars]
+WhatsApp: [single line including phone number]
+Facebook: [single line]
+Instagram: [single line]
 Hashtags: #TrippleK #TrippleKKE #PhoneDealsKE
     """.strip()
 
@@ -98,22 +97,16 @@ def safe_api_call(url: str):
         return None, f"Network error: {str(e)}"
 
 # ----------------------------
-# HELPERS
+# SPEC PARSING (clean format)
 # ----------------------------
-def time_since_release(status: str) -> str:
-    try:
-        clean = status.replace("Released ", "").strip()
-        date = parser.parse(clean)
-        days = (datetime.now() - date).days
-        if days < 0: return "Not released"
-        if days < 7: return f"{days} day{'s' if days != 1 else ''} in market"
-        if days < 30: return f"{days//7} week{'s' if days//7 != 1 else ''} in market"
-        if days < 365: return f"{days//30} month{'s' if days//30 != 1 else ''} in market"
-        return f"{days//365} year{'s' if days//365 != 1 else ''} in market"
-    except:
-        return "Unknown"
-
 def parse_specs(raw):
+    # Screen
+    display = raw.get("display", {})
+    size_part = display.get("size", "N/A").split(",")[0] if display.get("size") else "N/A"
+    res_part = display.get("resolution", "N/A")
+    screen = f"{size_part}, {res_part}"
+
+    # RAM & Storage
     ram = storage = "N/A"
     for mem in raw.get("memory", []):
         if mem.get("label") == "internal":
@@ -122,83 +115,96 @@ def parse_specs(raw):
             storage_match = re.search(r"(\d+GB)(?!\s+RAM)", val)
             if ram_match: ram = ram_match.group(1)
             if storage_match: storage = storage_match.group(1)
+
+    # Battery
+    battery = raw.get("battery", {}).get("battType", "N/A")
+
+    # Camera MP extraction
+    def extract_mp(cam_str):
+        if not cam_str: return "N/A"
+        mp_list = re.findall(r"(\d+)MP", cam_str)
+        return "+".join(mp_list) + "MP" if mp_list else "N/A"
+
+    main_cam = extract_mp(raw.get("mainCamera", {}).get("mainModules", ""))
+    selfie_cam = extract_mp(raw.get("selfieCamera", {}).get("selfieModules", ""))
+
     return {
         "name": raw["name"],
         "cover": (raw.get("image") or raw.get("cover", "")).strip(),
-        "screen": f"{raw['display']['size']} ({raw['display']['resolution']})",
+        "screen": screen,
         "ram": ram,
         "storage": storage,
-        "battery": raw["battery"]["battType"],
-        "chipset": raw["platform"]["chipset"],
-        "camera": raw["mainCamera"]["mainModules"],
-        "os": raw["platform"]["os"],
-        "launched": raw.get("launced", {}),
+        "battery": battery,
+        "main_camera": main_cam,
+        "selfie_camera": selfie_cam,
         "raw": raw
     }
 
-def copy_button(text: str, label: str = "Copy"):
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("`", "\\`")
-    st.markdown(f"""
-    <button class="copy-btn" onclick='navigator.clipboard.writeText("{escaped}")'>{label}</button>
-    """, unsafe_allow_html=True)
-
 # ----------------------------
-# AD IMAGE GENERATOR (WhatsApp)
+# AD IMAGE GENERATOR
 # ----------------------------
 def generate_whatsapp_ad_image(phone_data):
     try:
-        # Create blank image
-        width, height = 800, 1000
+        # Fetch phone image
+        phone_img = None
+        if phone_data["cover"]:
+            try:
+                resp = requests.get(phone_data["cover"], timeout=10)
+                phone_img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+            except:
+                pass
+
+        width, height = 1080, 1350
         img = Image.new("RGB", (width, height), "white")
         draw = ImageDraw.Draw(img)
 
-        # Load fonts (use default if not available)
+        # Left: Phone image (55% width, full height)
+        if phone_img:
+            img_w = int(width * 0.55)
+            img_h = height
+            phone_img = phone_img.resize((img_w, img_h), Image.Resampling.LANCZOS)
+            img.paste(phone_img, (0, 0))
+
+        # Right: Text
+        text_x = int(width * 0.55) + 40
+        y = 100
+
         try:
-            title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
-            spec_font = ImageFont.truetype("DejaVuSans.ttf", 24)
-            body_font = ImageFont.truetype("DejaVuSans.ttf", 28)
+            title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 52)
+            spec_font = ImageFont.truetype("DejaVuSans.ttf", 40)
         except:
             title_font = ImageFont.load_default()
             spec_font = ImageFont.load_default()
-            body_font = ImageFont.load_default()
-
-        # Draw background accent
-        draw.rectangle([0, 0, width, 120], fill=BRAND_MAROON)
-
-        # Add logo
-        try:
-            logo = Image.open(requests.get(LOGO_URL, stream=True).raw)
-            logo = logo.convert("RGBA")
-            logo.thumbnail((200, 200))
-            img.paste(logo, (40, 20), logo)
-        except:
-            draw.text((40, 40), "TRIPPLE K", fill="white", font=title_font)
 
         # Title
-        draw.text((50, 150), phone_data["name"], fill=BRAND_MAROON, font=title_font)
+        draw.text((text_x, y), phone_data["name"], fill=BRAND_MAROON, font=title_font)
+        y += 110
 
-        # Specs
-        y = 240
         specs = [
             f"Screen: {phone_data['screen']}",
             f"RAM: {phone_data['ram']}",
             f"Storage: {phone_data['storage']}",
             f"Battery: {phone_data['battery']}",
-            f"Camera: {phone_data['camera']}",
+            f"Main Camera: {phone_data['main_camera']}",
+            f"Selfie Camera: {phone_data['selfie_camera']}"
         ]
         for spec in specs:
-            draw.text((50, y), spec, fill="#333", font=spec_font)
-            y += 40
+            draw.text((text_x, y), spec, fill="#333", font=spec_font)
+            y += 70
 
-        # CTA
-        y += 40
-        draw.text((50, y), f"Call {TRIPPLEK_PHONE}", fill=BRAND_GREEN, font=body_font)
-        y += 40
-        draw.text((50, y), "Available with warranty", fill="#333", font=spec_font)
         y += 30
-        draw.text((50, y), "Pay on delivery • Nairobi delivery", fill="#333", font=spec_font)
+        draw.text((text_x, y), f"Call {TRIPPLEK_PHONE}", fill=BRAND_GREEN, font=spec_font)
+        y += 60
+        draw.text((text_x, y), "Warranty • Pay on delivery", fill="#333", font=spec_font)
 
-        # Save to bytes
+        # Logo (top-right)
+        try:
+            logo = Image.open(requests.get(LOGO_URL, stream=True).raw).convert("RGBA")
+            logo.thumbnail((200, 200))
+            img.paste(logo, (width - 220, 40), logo)
+        except:
+            pass
+
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         buf.seek(0)
@@ -206,6 +212,15 @@ def generate_whatsapp_ad_image(phone_data):
     except Exception as e:
         st.error(f"Ad image generation failed: {e}")
         return None
+
+# ----------------------------
+# COPY BUTTON
+# ----------------------------
+def copy_button(text: str, label: str = "Copy"):
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("`", "\\`")
+    st.markdown(f"""
+    <button class="copy-btn" onclick='navigator.clipboard.writeText("{escaped}")'>{label}</button>
+    """, unsafe_allow_html=True)
 
 # ----------------------------
 # MAIN APP
@@ -251,7 +266,6 @@ if "search_results" in st.session_state:
     clean = parse_specs(details)
     st.session_state["current_phone"] = clean
 
-    # Tabs
     tab1, tab2, tab3 = st.tabs(["Phone Details", "Social Media", "Ads"])
 
     with tab1:
@@ -277,24 +291,22 @@ if "search_results" in st.session_state:
                 f"RAM: {clean['ram']}",
                 f"Storage: {clean['storage']}",
                 f"Battery: {clean['battery']}",
-                f"Chip: {clean['chipset']}",
-                f"Camera: {clean['camera']}",
-                f"OS: {clean['os']}"
+                f"Main Camera: {clean['main_camera']}",
+                f"Selfie Camera: {clean['selfie_camera']}"
             ]
             spec_text = "\n".join(spec_lines)
-            st.text_area("Parsed Specs", spec_text, height=200, disabled=True)
+            st.text_area("Parsed Specs", spec_text, height=220, disabled=True)
             copy_button(spec_text, "Copy Specs")
 
     with tab2:
         if not client:
-            st.warning("Groq API key missing. Set `groq_key` in secrets to generate posts.")
+            st.warning("Groq API key missing. Set `groq_key` in secrets.")
         else:
             persona = st.selectbox("Target Persona", ["All Kenyan buyers", "Budget students", "Tech-savvy professionals", "Camera creators", "Business executives"], index=0)
             tone = st.selectbox("Brand Tone", ["Playful", "Rational", "Luxury", "FOMO"], index=0)
             if st.button("Generate Social Posts"):
-                phone_data = clean
                 with st.spinner("Generating with Groq..."):
-                    prompt = build_groq_prompt(phone_data, persona, tone)
+                    prompt = build_groq_prompt(clean, persona, tone)
                     try:
                         chat = client.chat.completions.create(
                             model=MODEL,
@@ -314,55 +326,36 @@ if "search_results" in st.session_state:
             else:
                 posts = {"TikTok": "", "WhatsApp": "", "Facebook": "", "Instagram": "", "Hashtags": ""}
                 lines = [l.strip() for l in raw.splitlines() if l.strip()]
-                current = None
                 for line in lines:
                     if line.startswith("TikTok:"):
-                        current, posts["TikTok"] = "TikTok", line.replace("TikTok:", "").strip()
+                        posts["TikTok"] = line.replace("TikTok:", "").strip()
                     elif line.startswith("WhatsApp:"):
-                        current, posts["WhatsApp"] = "WhatsApp", line.replace("WhatsApp:", "").strip()
+                        posts["WhatsApp"] = line.replace("WhatsApp:", "").strip()
                     elif line.startswith("Facebook:"):
-                        current, posts["Facebook"] = "Facebook", line.replace("Facebook:", "").strip()
+                        posts["Facebook"] = line.replace("Facebook:", "").strip()
                     elif line.startswith("Instagram:"):
-                        current, posts["Instagram"] = "Instagram", line.replace("Instagram:", "").strip()
+                        posts["Instagram"] = line.replace("Instagram:", "").strip()
                     elif line.startswith("Hashtags:"):
-                        current, posts["Hashtags"] = "Hashtags", line.replace("Hashtags:", "").strip()
-                    elif current:
-                        posts[current] += " " + line
+                        posts["Hashtags"] = line.replace("Hashtags:", "").strip()
 
-                # Display each with title
-                if posts["TikTok"]:
-                    st.markdown('<div class="post-title">TikTok</div>', unsafe_allow_html=True)
-                    st.text_area("", posts["TikTok"], height=60, key="tiktok")
-                    copy_button(posts["TikTok"], "Copy TikTok")
-
-                if posts["WhatsApp"]:
-                    st.markdown('<div class="post-title">WhatsApp</div>', unsafe_allow_html=True)
-                    st.text_area("", posts["WhatsApp"], height=100, key="whatsapp")
-                    copy_button(posts["WhatsApp"], "Copy WhatsApp")
-
-                if posts["Facebook"]:
-                    st.markdown('<div class="post-title">Facebook</div>', unsafe_allow_html=True)
-                    st.text_area("", posts["Facebook"], height=100, key="facebook")
-                    copy_button(posts["Facebook"], "Copy Facebook")
-
-                if posts["Instagram"]:
-                    st.markdown('<div class="post-title">Instagram</div>', unsafe_allow_html=True)
-                    st.text_area("", posts["Instagram"], height=80, key="instagram")
-                    copy_button(posts["Instagram"], "Copy Instagram")
-
-                if posts["Hashtags"]:
-                    st.markdown('<div class="post-title">Hashtags</div>', unsafe_allow_html=True)
-                    st.text_input("", posts["Hashtags"], key="hashtags")
-                    copy_button(posts["Hashtags"], "Copy Hashtags")
+                for plat, text in posts.items():
+                    if text:
+                        st.markdown(f'<div class="post-title">{plat}</div>', unsafe_allow_html=True)
+                        key = plat.lower()
+                        if plat == "Hashtags":
+                            st.text_input("", text, key=key)
+                        else:
+                            st.text_area("", text, height=60 if plat == "TikTok" else 90, key=key)
+                        copy_button(text, f"Copy {plat}")
 
     with tab3:
         st.subheader("WhatsApp Ad Image")
         if st.button("Generate Branded Ad"):
             with st.spinner("Creating ad image..."):
-                img_buffer = generate_whatsapp_ad_image(clean)
-                if img_buffer:
-                    st.image(img_buffer, use_container_width=True)
-                    st.download_button("Download Ad Image", img_buffer, "tripplek_ad.png", "image/png")
+                img_buf = generate_whatsapp_ad_image(clean)
+                if img_buf:
+                    st.image(img_buf, use_container_width=True)
+                    st.download_button("Download Ad Image", img_buf, "tripplek_ad.png", "image/png")
 
 st.divider()
 st.caption(f"© Tripple K Communications | {TRIPPLEK_URL}")
