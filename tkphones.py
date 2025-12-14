@@ -129,7 +129,7 @@ def copy_button(text: str, label: str = "📋 Copy"):
 # ----------------------------
 # GROQ
 # ----------------------------
-def generate_social_post(phone_ dict, persona: str, tone: str):
+def generate_social_post(phone_dict, persona: str, tone: str):
     name = phone_data["name"]
     specs = phone_data["raw"]
     prompt = f"""
