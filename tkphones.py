@@ -807,4 +807,496 @@ BUSINESS INFO:
 - Tripple K Communications - Leading phone retailer in Kenya
 - 100% genuine phones with manufacturer warranty
 - Pay on delivery available
--
+- Fast Nairobi delivery
+- Contact: {TRIPPLEK_PHONE}
+- Website: {TRIPPLEK_URL}
+
+TARGET AUDIENCE: {persona}
+BRAND TONE: {tone}
+
+REQUIRED OUTPUT FORMAT:
+
+=== AD CREATIVE ELEMENTS ===
+Hook/Banner: [Attention-grabbing headline for ads - max 10 words]
+CTA: [Clear call-to-action - tell users what to do]
+Urgency: [Create urgency message - limited time/stock offer]
+
+=== SOCIAL MEDIA POSTS ===
+TikTok: [Video caption - 80-100 chars, engaging for short videos, include trending elements]
+WhatsApp: [Message - 2-3 lines, includes key specs and contact, easy to forward]
+Facebook: [Post - 3-4 sentences, detailed benefits, includes emojis]
+Instagram: [Caption - 2-3 stylish lines, visual-focused, influencer style]
+
+=== HASHTAGS ===
+[7-10 relevant hashtags for Kenya phone market, include brand hashtags]
+
+Make content platform-specific, highlight unique features, and include emotional triggers."""
+
+def parse_marketing_content(text: str) -> Dict[str, str]:
+    """Parse marketing content from AI response"""
+    content = {
+        # Ad elements
+        "hook": "",
+        "cta": "",
+        "urgency": "",
+        # Social posts
+        "tiktok": "",
+        "whatsapp": "",
+        "facebook": "",
+        "instagram": "",
+        "hashtags": ""
+    }
+    
+    current_section = None
+    lines = text.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Check for section headers
+        if "=== AD CREATIVE ELEMENTS ===" in line:
+            current_section = "ad_elements"
+            continue
+        elif "=== SOCIAL MEDIA POSTS ===" in line:
+            current_section = "social_posts"
+            continue
+        elif "=== HASHTAGS ===" in line:
+            current_section = "hashtags"
+            continue
+        
+        # Parse content based on current section
+        if current_section == "ad_elements":
+            if "Hook/Banner:" in line:
+                content["hook"] = line.split("Hook/Banner:")[1].strip()
+            elif "CTA:" in line:
+                content["cta"] = line.split("CTA:")[1].strip()
+            elif "Urgency:" in line:
+                content["urgency"] = line.split("Urgency:")[1].strip()
+        
+        elif current_section == "social_posts":
+            if "TikTok:" in line:
+                content["tiktok"] = line.split("TikTok:")[1].strip()
+            elif "WhatsApp:" in line:
+                content["whatsapp"] = line.split("WhatsApp:")[1].strip()
+            elif "Facebook:" in line:
+                content["facebook"] = line.split("Facebook:")[1].strip()
+            elif "Instagram:" in line:
+                content["instagram"] = line.split("Instagram:")[1].strip()
+        
+        elif current_section == "hashtags":
+            if line and not line.startswith("==="):
+                content["hashtags"] = line.strip()
+    
+    return content
+
+def generate_marketing_content(phone_data: dict, persona: str, tone: str) -> Optional[Dict[str, str]]:
+    """Generate marketing content with rate limiting"""
+    if not client:
+        st.error("Groq API not configured")
+        return None
+    
+    # Check rate limit
+    if not rate_limiter.can_make_call():
+        wait_time = rate_limiter.get_wait_time()
+        st.error(f"Rate limit exceeded. Please wait {int(wait_time)} seconds.")
+        return None
+    
+    try:
+        prompt = create_marketing_prompt(phone_data, persona, tone)
+        
+        # Record API call
+        rate_limiter.record_call()
+        
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.9,
+            max_tokens=1000,
+            timeout=30
+        )
+        
+        generated_text = response.choices[0].message.content.strip()
+        return parse_marketing_content(generated_text)
+        
+    except Exception as e:
+        st.error(f"Failed to generate content: {str(e)}")
+        return None
+
+def display_marketing_content(content: Dict[str, str]):
+    """Display marketing content in organized sections"""
+    
+    # Ad Elements
+    if any(content.get(key) for key in ["hook", "cta", "urgency"]):
+        st.subheader("🎯 Ad Creative Elements")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if content.get("hook"):
+                st.markdown(f'<div class="element-box">', unsafe_allow_html=True)
+                st.markdown("**🎨 Hook/Banner**")
+                st.info(content['hook'])
+                st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col2:
+            if content.get("cta"):
+                st.markdown(f'<div class="element-box">', unsafe_allow_html=True)
+                st.markdown("**📢 Call-to-Action**")
+                st.success(content['cta'])
+                st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col3:
+            if content.get("urgency"):
+                st.markdown(f'<div class="element-box">', unsafe_allow_html=True)
+                st.markdown("**⏰ Urgency**")
+                st.warning(content['urgency'])
+                st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown("---")
+    
+    # Social Media Posts
+    st.subheader("📱 Social Media Posts")
+    
+    platforms = [
+        ("🎵 TikTok", content.get("tiktok", "")),
+        ("💬 WhatsApp", content.get("whatsapp", "")),
+        ("📘 Facebook", content.get("facebook", "")),
+        ("📸 Instagram", content.get("instagram", ""))
+    ]
+    
+    for platform_name, platform_content in platforms:
+        if platform_content:
+            st.markdown(f'<div class="post-box">', unsafe_allow_html=True)
+            st.markdown(f'<div class="post-platform">{platform_name}</div>', unsafe_allow_html=True)
+            st.text(platform_content)
+            if st.button(f"📋 Copy {platform_name.split()[1]}", key=f"copy_{platform_name}"):
+                st.code(platform_content)
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Hashtags
+    if content.get("hashtags"):
+        st.markdown("---")
+        st.subheader("🏷️ Hashtags")
+        st.markdown(f'<div class="specs-box">{content["hashtags"]}</div>', unsafe_allow_html=True)
+
+# ----------------------------
+# MAIN APPLICATION
+# ----------------------------
+def main():
+    st.title("📱 Tripple K Phone Marketing Suite")
+    st.markdown("Create professional marketing campaigns for smartphones")
+    
+    # Initialize session state
+    if "search_results" not in st.session_state:
+        st.session_state.search_results = None
+    if "current_phone" not in st.session_state:
+        st.session_state.current_phone = None
+    if "marketing_content" not in st.session_state:
+        st.session_state.marketing_content = None
+    if "ad_elements" not in st.session_state:
+        st.session_state.ad_elements = {}
+    
+    # Tab navigation
+    tabs = st.tabs(["🔍 Find Phone", "📝 Create Campaign", "🎨 Generate Ads"])
+    
+    # TAB 1: FIND PHONE
+    with tabs[0]:
+        st.subheader("Search Phone Specifications")
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            phone_query = st.text_input("Enter phone name or model:", 
+                                      placeholder="e.g., Samsung Galaxy S23, iPhone 15",
+                                      key="search_input")
+        with col2:
+            search_btn = st.button("🔍 Search", type="primary", use_container_width=True)
+        
+        if search_btn:
+            if not phone_query.strip():
+                st.warning("Please enter a phone name")
+            else:
+                with st.spinner("🔍 Searching database..."):
+                    url = f"https://tkphsp2.vercel.app/gsm/search?q={requests.utils.quote(phone_query)}"
+                    results, error = fetch_api_data(url)
+                    
+                    if error or not results:
+                        url2 = f"https://api-mobilespecs.azharimm.dev/v2/search?query={requests.utils.quote(phone_query)}"
+                        results, error = fetch_api_data(url2)
+                    
+                    if error:
+                        st.error(f"❌ Search failed: {error}")
+                    elif not results:
+                        st.info("No phones found. Try a different search term.")
+                    else:
+                        st.session_state.search_results = results
+                        st.success(f"✅ Found {len(results)} phones")
+        
+        # Display search results
+        if st.session_state.search_results:
+            results = st.session_state.search_results
+            phone_names = [r.get("name", "Unknown") for r in results]
+            selected_name = st.selectbox("Select a phone:", phone_names, key="phone_select")
+            
+            if selected_name:
+                selected = next(r for r in results if r.get("name") == selected_name)
+                
+                with st.spinner("📱 Loading full specifications..."):
+                    details_url = f"https://tkphsp2.vercel.app/gsm/info/{selected.get('id')}"
+                    details, error = fetch_api_data(details_url)
+                    
+                    if error or not details:
+                        url2 = f"https://api-mobilespecs.azharimm.dev/v2/search?query={requests.utils.quote(selected_name)}"
+                        search_res, _ = fetch_api_data(url2)
+                        if search_res:
+                            slug = search_res[0]["slug"]
+                            details, error = fetch_api_data(f"https://api-mobilespecs.azharimm.dev/{slug}")
+                    
+                    if error:
+                        st.error(f"❌ Could not load specs: {error}")
+                    else:
+                        phone_data = parse_phone_specs(details)
+                        st.session_state.current_phone = phone_data
+                        
+                        # Display phone info
+                        st.markdown(f'<h2 class="phone-title">{phone_data["name"]}</h2>', 
+                                  unsafe_allow_html=True)
+                        
+                        # Launch date info
+                        launch_date, time_passed = get_market_info(phone_data["launch_date"])
+                        col_info1, col_info2 = st.columns(2)
+                        with col_info1:
+                            st.caption(f"📅 {launch_date}")
+                        with col_info2:
+                            if time_passed:
+                                st.caption(f"⏰ {time_passed}")
+                        
+                        # Two column layout
+                        col_img, col_specs = st.columns([1, 1])
+                        
+                        with col_img:
+                            # Get and display phone images
+                            if phone_data.get("id"):
+                                phone_images = get_phone_images(phone_data["id"])
+                                if phone_images:
+                                    # Create tabs for multiple images
+                                    img_tabs = st.tabs([f"Image {i+1}" for i in range(min(3, len(phone_images)))])
+                                    for i, img_tab in enumerate(img_tabs):
+                                        with img_tab:
+                                            img = download_image(phone_images[i])
+                                            if img:
+                                                st.image(img, use_container_width=True)
+                            elif phone_data["cover"]:
+                                phone_img = download_image(phone_data["cover"])
+                                if phone_img:
+                                    st.image(phone_img, use_container_width=True)
+                        
+                        with col_specs:
+                            formatted_specs = format_specs_for_display(phone_data)
+                            st.markdown('<div class="specs-box">', unsafe_allow_html=True)
+                            st.text(formatted_specs)
+                            st.markdown('</div>', unsafe_allow_html=True)
+                            
+                            if st.button("📋 Copy All Specs", use_container_width=True):
+                                st.code(formatted_specs)
+    
+    # TAB 2: CREATE CAMPAIGN
+    with tabs[1]:
+        st.subheader("Create Marketing Campaign")
+        
+        if not st.session_state.current_phone:
+            st.info("👈 Please search and select a phone first.")
+        elif not client:
+            st.warning("⚠️ Groq API key not configured. Content generation is disabled.")
+        else:
+            phone_data = st.session_state.current_phone
+            
+            # Configuration
+            st.markdown("### 🎯 Campaign Settings")
+            col1, col2 = st.columns(2)
+            with col1:
+                persona = st.selectbox(
+                    "Target Audience",
+                    ["General Consumers", "Tech Enthusiasts", "Students & Youth", 
+                     "Working Professionals", "Content Creators", "Budget Buyers",
+                     "Gamers", "Photography Lovers"],
+                    index=0,
+                    key="persona_select"
+                )
+            with col2:
+                tone = st.selectbox(
+                    "Brand Tone",
+                    ["Professional", "Friendly & Relatable", "Excited & Energetic", 
+                     "Informative & Helpful", "Urgent & Limited", "Luxury & Premium",
+                     "Trendy & Modern"],
+                    index=0,
+                    key="tone_select"
+                )
+            
+            if st.button("🚀 Generate Complete Campaign", type="primary", use_container_width=True):
+                with st.spinner("🎨 Creating marketing campaign..."):
+                    content = generate_marketing_content(phone_data, persona, tone)
+                    
+                    if content:
+                        st.session_state.marketing_content = content
+                        # Extract ad elements for use in ads
+                        st.session_state.ad_elements = {
+                            "hook": content.get("hook", ""),
+                            "cta": content.get("cta", ""),
+                            "urgency": content.get("urgency", "")
+                        }
+                        st.balloons()
+                        st.success("✅ Marketing campaign generated successfully!")
+            
+            # Display generated content
+            if st.session_state.marketing_content:
+                display_marketing_content(st.session_state.marketing_content)
+                
+                # Download all content
+                if st.button("📥 Download Complete Campaign", use_container_width=True):
+                    all_content = "="*50 + "\n"
+                    all_content += f"Marketing Campaign for {phone_data['name']}\n"
+                    all_content += "="*50 + "\n\n"
+                    
+                    # Ad elements
+                    all_content += "AD CREATIVE ELEMENTS:\n"
+                    all_content += f"Hook: {st.session_state.marketing_content.get('hook', '')}\n"
+                    all_content += f"CTA: {st.session_state.marketing_content.get('cta', '')}\n"
+                    all_content += f"Urgency: {st.session_state.marketing_content.get('urgency', '')}\n\n"
+                    
+                    # Social posts
+                    all_content += "SOCIAL MEDIA POSTS:\n"
+                    for platform in ["tiktok", "whatsapp", "facebook", "instagram"]:
+                        if content := st.session_state.marketing_content.get(platform):
+                            all_content += f"\n{platform.upper()}:\n{content}\n"
+                    
+                    # Hashtags
+                    all_content += f"\nHASHTAGS:\n{st.session_state.marketing_content.get('hashtags', '')}\n"
+                    
+                    st.download_button(
+                        "Download",
+                        all_content,
+                        file_name=f"tripplek_{phone_data['name'].replace(' ', '_')}_campaign.txt",
+                        mime="text/plain"
+                    )
+    
+    # TAB 3: GENERATE ADS
+    with tabs[2]:
+        st.subheader("Generate Marketing Ads")
+        
+        if not st.session_state.current_phone:
+            st.info("👈 Please search and select a phone first.")
+        else:
+            phone_data = st.session_state.current_phone
+            
+            # Show ad elements if available
+            if st.session_state.ad_elements:
+                st.markdown("### 🎯 Using AI-Generated Elements")
+                col_e1, col_e2, col_e3 = st.columns(3)
+                with col_e1:
+                    if hook := st.session_state.ad_elements.get("hook"):
+                        st.info(f"**Hook:** {hook}")
+                with col_e2:
+                    if cta := st.session_state.ad_elements.get("cta"):
+                        st.success(f"**CTA:** {cta}")
+                with col_e3:
+                    if urgency := st.session_state.ad_elements.get("urgency"):
+                        st.warning(f"**Urgency:** {urgency}")
+            
+            st.markdown("### 🖼️ Select Ad Types")
+            
+            # Ad type selection
+            ad_types = st.multiselect(
+                "Choose ad formats to generate:",
+                ["Facebook Ad (1200x630)", "WhatsApp Ad (1080x1080)", "Instagram Ad (1080x1350)"],
+                default=["Facebook Ad (1200x630)", "WhatsApp Ad (1080x1080)"]
+            )
+            
+            if st.button("✨ Generate Selected Ads", type="primary", use_container_width=True):
+                if not ad_types:
+                    st.warning("Please select at least one ad type.")
+                else:
+                    generated_ads = {}
+                    
+                    with st.spinner("🎨 Creating ad images..."):
+                        for ad_type in ad_types:
+                            try:
+                                if "Facebook" in ad_type:
+                                    generator = FacebookAdGenerator()
+                                    ad_image = generator.generate(phone_data, st.session_state.ad_elements)
+                                elif "WhatsApp" in ad_type:
+                                    generator = WhatsAppAdGenerator()
+                                    ad_image = generator.generate(phone_data, st.session_state.ad_elements)
+                                elif "Instagram" in ad_type:
+                                    generator = InstagramAdGenerator()
+                                    ad_image = generator.generate(phone_data, st.session_state.ad_elements)
+                                
+                                # Convert to bytes
+                                img_bytes = BytesIO()
+                                ad_image.save(img_bytes, format='PNG', quality=95)
+                                img_bytes.seek(0)
+                                
+                                generated_ads[ad_type] = img_bytes.getvalue()
+                                
+                            except Exception as e:
+                                st.error(f"Failed to create {ad_type}: {str(e)}")
+                    
+                    if generated_ads:
+                        st.session_state.generated_ads = generated_ads
+                        st.success(f"✅ Generated {len(generated_ads)} ad(s) successfully!")
+            
+            # Display and download generated ads
+            if hasattr(st.session_state, 'generated_ads'):
+                st.markdown("---")
+                st.subheader("📱 Generated Ads")
+                
+                for ad_type, ad_bytes in st.session_state.generated_ads.items():
+                    with st.expander(f"{ad_type}", expanded=True):
+                        st.markdown('<div class="ad-preview">', unsafe_allow_html=True)
+                        
+                        # Display with appropriate sizing
+                        if "Instagram" in ad_type:
+                            # Show vertical ads with proper sizing
+                            st.image(ad_bytes, width=400)
+                        else:
+                            st.image(ad_bytes, use_container_width=True)
+                        
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        # Download button for each ad
+                        ad_type_simple = ad_type.split()[0].lower()
+                        file_name = f"tripplek_{ad_type_simple}_ad.png"
+                        
+                        st.download_button(
+                            f"📥 Download {ad_type.split()[0]} Ad",
+                            ad_bytes,
+                            file_name=file_name,
+                            mime="image/png",
+                            key=f"download_{ad_type}"
+                        )
+    
+    # Footer
+    st.divider()
+    st.markdown(f"""
+    <div style="text-align: center; color: {BRAND_MAROON}; padding: 20px;">
+        <h3>Tripple K Communications</h3>
+        <p>📞 {TRIPPLEK_PHONE} | 🌐 {TRIPPLEK_URL}</p>
+        <p style="font-size: 0.9em; color: #666;">Professional Phone Marketing Suite</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Rate limit status
+    if rate_limiter.calls:
+        calls_left = RATE_LIMIT_CALLS - len(rate_limiter.calls)
+        if calls_left > 0:
+            st.caption(f"📊 Rate limit: {calls_left} calls remaining this minute")
+        else:
+            wait_time = rate_limiter.get_wait_time()
+            st.caption(f"⏳ Rate limit exceeded. Wait {int(wait_time)} seconds.")
+
+# ----------------------------
+# RUN APPLICATION
+# ----------------------------
+if __name__ == "__main__":
+    main()
