@@ -212,7 +212,7 @@ def create_fallback_icon(name: str, size: int) -> Image.Image:
     draw.ellipse([0, 0, size, size], fill=color)
     
     try:
-        font = ImageFont.truetype("arialbd.ttf", size // 2)
+        font = ImageFont.truetype("poppins.ttf", size // 2)
     except:
         font = ImageFont.load_default()
     
@@ -417,11 +417,11 @@ class AdGenerator:
         
         # Load fonts
         try:
-            self.title_font = ImageFont.truetype("arialbd.ttf", int(width * 0.04))
-            self.subtitle_font = ImageFont.truetype("arialbd.ttf", int(width * 0.028))
-            self.body_font = ImageFont.truetype("arial.ttf", int(width * 0.022))
-            self.small_font = ImageFont.truetype("arial.ttf", int(width * 0.018))
-            self.badge_font = ImageFont.truetype("arialbd.ttf", int(width * 0.025))
+            self.title_font = ImageFont.truetype("poppins.ttf", int(width * 0.04))
+            self.subtitle_font = ImageFont.truetype("poppins.ttf", int(width * 0.028))
+            self.body_font = ImageFont.truetype("poppins.ttf", int(width * 0.022))
+            self.small_font = ImageFont.truetype("poppins.ttf", int(width * 0.018))
+            self.badge_font = ImageFont.truetype("poppins.ttf", int(width * 0.025))
         except:
             default = ImageFont.load_default()
             self.title_font = self.subtitle_font = self.body_font = default
