@@ -1054,7 +1054,7 @@ def main():
                     <strong>🌐</strong> {TRIPPLEK_URL}
                 </p>
             </div>
-            
+            st.markdown("""
             <div style="background: linear-gradient(135deg, {BRAND_MAROON}15 0%, #fff5f5 100%); 
                        padding: 20px; border-radius: 15px; border: 2px solid {BRAND_MAROON}30;">
                 <p style="margin: 0; font-weight: 700; color: {BRAND_MAROON}; font-size: 1.1rem;">🎯 Our Promise</p>
@@ -1074,6 +1074,7 @@ def main():
         <p style="color: #888; font-size: 0.9rem; margin-top: 2rem;">
             Professional Phone Marketing Suite • Version 6.0 • Designed for Tripple K Communications
         </p>
+</div>
     </div>
     """, unsafe_allow_html=True)
 
