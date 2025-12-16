@@ -481,7 +481,8 @@ def create_whatsapp_ad(phone_specs: Dict, phone_image_url: str, price: str = "")
     draw.rectangle([0, 0, width, 180], fill=BRAND_MAROON)
     
     if logo:
-        base.paste(logo, (width//2 - 100, 60), logo)
+        draw.text((30, 30), "TRIPPLE K", 
+              fill=BRAND_GOLD, font=header_font, anchor="mm")
     
     # Brand name
     draw.text((width//2, 130), "TRIPPLE K COMMUNICATIONS", 
