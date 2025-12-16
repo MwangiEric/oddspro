@@ -361,10 +361,10 @@ def create_whatsapp_ad(phone_specs: Dict, phone_image_url: str) -> Image.Image:
     
     # Try to load fonts
     try:
-        title_font = ImageFont.truetype("arial.ttf", 48)
-        header_font = ImageFont.truetype("arial.ttf", 36)
-        body_font = ImageFont.truetype("arial.ttf", 28)
-        cta_font = ImageFont.truetype("arial.ttf", 32)
+        title_font = ImageFont.truetype("poppins.ttf", 48)
+        header_font = ImageFont.truetype("poppins.ttf", 36)
+        body_font = ImageFont.truetype("poppins.ttf", 28)
+        cta_font = ImageFont.truetype("poppins.ttf", 32)
     except:
         title_font = ImageFont.load_default()
         header_font = ImageFont.load_default()
