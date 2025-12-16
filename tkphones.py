@@ -465,7 +465,7 @@ def create_whatsapp_ad(phone_specs: Dict, phone_image_url: str, price: str = "")
         body_font = ImageFont.truetype("poppins.ttf", 32)
         price_font = ImageFont.truetype("poppins.ttf", 72)
         cta_font = ImageFont.truetype("poppins.ttf", 38)
-        small_font = ImageFont.truetype("arial.ttf", 28)
+        small_font = ImageFont.truetype("poppins.ttf", 28)
     except:
         title_font = ImageFont.load_default()
         header_font = ImageFont.load_default()
