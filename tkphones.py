@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import re
-from dateutil import parser
 from datetime import datetime
 import json
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -25,6 +24,7 @@ else:
 BRAND_MAROON = "#8B0000"
 BRAND_GOLD = "#FFD700"
 BRAND_ACCENT = "#FF6B35"
+BRAND_WHITE = "#FFFFFF"
 
 # Contact info
 TRIPPLEK_PHONE = "+254700123456"
@@ -120,29 +120,22 @@ st.markdown(f"""
         flex-wrap: wrap;
     }}
     
-    .image-option {{
-        border: 2px solid #ddd;
-        border-radius: 10px;
-        padding: 5px;
-        cursor: pointer;
-        transition: all 0.3s;
-        width: 150px;
-        height: 150px;
+    .contact-section {{
+        display: flex;
+        justify-content: center;
+        gap: 40px;
+        margin-top: 20px;
+        flex-wrap: wrap;
+    }}
+    
+    .contact-item {{
         display: flex;
         align-items: center;
-        justify-content: center;
-        overflow: hidden;
-    }}
-    
-    .image-option:hover {{
-        border-color: {BRAND_MAROON};
-        transform: scale(1.05);
-    }}
-    
-    .image-option.selected {{
-        border-color: {BRAND_MAROON};
-        border-width: 3px;
-        box-shadow: 0 0 10px rgba(139, 0, 0, 0.3);
+        gap: 10px;
+        padding: 10px 20px;
+        background: {BRAND_WHITE};
+        border-radius: 10px;
+        box-shadow: 0 3px 10px rgba(0,0,0,0.1);
     }}
     
     .stButton>button {{
@@ -218,14 +211,22 @@ def fetch_api_data(url: str) -> Tuple[Optional[dict], Optional[str]]:
 @st.cache_data(ttl=86400)
 @retry_on_error(max_retries=2)
 def download_image(url: str) -> Optional[Image.Image]:
-    """Download and cache image"""
+    """Download and cache image - SIMPLIFIED VERSION"""
     try:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
             img = Image.open(BytesIO(response.content))
-            return img.convert('RGBA')
-    except:
-        pass
+            # Convert to RGB to avoid transparency issues
+            if img.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'RGBA':
+                    background.paste(img, mask=img.split()[3])
+                else:
+                    background.paste(img, mask=img.split()[1])
+                return background
+            return img.convert('RGB')
+    except Exception as e:
+        st.error(f"Image download error: {str(e)}")
     return None
 
 @st.cache_data(ttl=86400)
@@ -269,7 +270,7 @@ def create_fallback_icon(name: str, size: int) -> Image.Image:
 
 @st.cache_data(ttl=86400)
 def get_logo() -> Optional[Image.Image]:
-    """Get Tripple K logo - full size since it's 255x72"""
+    """Get Tripple K logo"""
     img = download_image(LOGO_URL)
     return img
 
@@ -284,6 +285,26 @@ def get_phone_images(phone_id: str) -> List[str]:
         pass
     return []
 
+def remove_background(image: Image.Image) -> Image.Image:
+    """Remove background from image using simple color-based approach"""
+    try:
+        # Simple background removal for white/light backgrounds
+        img = image.convert('RGBA')
+        data = img.getdata()
+        
+        new_data = []
+        for item in data:
+            # If pixel is close to white, make it transparent
+            if item[0] > 240 and item[1] > 240 and item[2] > 240:
+                new_data.append((255, 255, 255, 0))
+            else:
+                new_data.append(item)
+        
+        img.putdata(new_data)
+        return img
+    except:
+        return image
+
 # ==========================================
 # ENHANCED SPEC PARSING
 # ==========================================
@@ -293,7 +314,6 @@ def extract_mp_value(text: str) -> str:
     if not text or text == "N/A":
         return "N/A"
     
-    # Find all numbers that could be MP values
     numbers = re.findall(r'\b(\d{1,3}(?:\.\d+)?)\s*MP', str(text), re.IGNORECASE)
     
     if numbers:
@@ -313,10 +333,7 @@ def extract_mp_value(text: str) -> str:
     return "N/A"
 
 def parse_ram_storage(memory_info: List[Dict]) -> Tuple[str, str]:
-    """
-    Enhanced RAM/Storage parser with robust regex
-    Handles formats: "8GB RAM, 256GB ROM", "12GB/512GB", "8/128GB", etc.
-    """
+    """Enhanced RAM/Storage parser"""
     ram = "N/A"
     storage = "N/A"
     
@@ -326,46 +343,42 @@ def parse_ram_storage(memory_info: List[Dict]) -> Tuple[str, str]:
         
         val = str(mem.get("value", ""))
         
-        # Pattern 1: "8GB RAM" or "8 GB RAM"
+        # RAM patterns
         ram_match = re.search(r'(\d+)\s*GB\s+RAM', val, re.IGNORECASE)
         if ram_match:
             ram = f"{ram_match.group(1)}GB"
         
-        # Pattern 2: "256GB ROM" or "256GB storage"
+        # Storage patterns
         storage_match = re.search(r'(\d+)\s*GB\s+(?:ROM|storage)', val, re.IGNORECASE)
         if storage_match:
             storage = f"{storage_match.group(1)}GB"
         
-        # Pattern 3: "8GB/256GB" or "8/256GB" or "12GB/512GB"
+        # Combo patterns
         combo_match = re.search(r'(\d+)\s*GB?\s*/\s*(\d+)\s*GB', val, re.IGNORECASE)
         if combo_match:
             ram = f"{combo_match.group(1)}GB" if ram == "N/A" else ram
             storage = f"{combo_match.group(2)}GB" if storage == "N/A" else storage
         
-        # Pattern 4: Multiple storage options "128GB/256GB/512GB"
+        # Multiple storage options
         if storage == "N/A" or "/" in val:
             all_storage = re.findall(r'(\d+)\s*(?:GB|TB)', val, re.IGNORECASE)
             if all_storage and len(all_storage) > 1:
-                # Skip first if it's likely RAM
                 storage_vals = all_storage[1:] if ram != "N/A" else all_storage
                 storage = "/".join([f"{s}GB" for s in storage_vals[:3]])
     
     return ram, storage
 
 def parse_screen_specs(display: Dict) -> str:
-    """Parse screen specs - inches and pixels only"""
+    """Parse screen specs"""
     size = display.get("size", "")
     resolution = display.get("resolution", "")
     
-    # Extract inches
     inches_match = re.search(r'(\d+\.?\d*)\s*(?:inches|")', str(size), re.IGNORECASE)
     inches = inches_match.group(1) if inches_match else ""
     
-    # Extract resolution (e.g., "1080 x 2340")
     res_match = re.search(r'(\d+)\s*x\s*(\d+)', str(resolution), re.IGNORECASE)
     pixels = f"{res_match.group(1)} x {res_match.group(2)}" if res_match else ""
     
-    # Combine
     if inches and pixels:
         return f"{inches} inches, {pixels} pixels"
     elif inches:
@@ -409,7 +422,7 @@ def parse_phone_specs(raw_data: dict) -> Dict[str, Any]:
     }
 
 # ==========================================
-# TEXT WRAPPING UTILITIES WITH IMPROVED SPACING
+# TEXT WRAPPING UTILITIES
 # ==========================================
 
 def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
@@ -437,23 +450,20 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[s
 
 def draw_wrapped_text(draw: ImageDraw.ImageDraw, text: str, xy: Tuple[int, int],
                       font: ImageFont.FreeTypeFont, fill: str, max_width: int,
-                      line_spacing: int = 12) -> int:  # Increased line spacing
+                      line_spacing: int = 12) -> int:
     """Draw wrapped text and return final y position"""
     x, y = xy
     lines = wrap_text(text, font, max_width)
     
     for line in lines:
-        bbox = font.getbbox(line)
-        line_height = bbox[3] - bbox[1]
-        
-        # Draw line at proper baseline
         draw.text((x, y), line, fill=fill, font=font)
-        y += line_height + line_spacing
+        bbox = font.getbbox(line)
+        y += (bbox[3] - bbox[1]) + line_spacing
     
     return y
 
 # ==========================================
-# AD GENERATOR BASE CLASS WITH IMPROVED ALIGNMENT
+# AD GENERATOR BASE CLASS WITH IMPROVEMENTS
 # ==========================================
 
 class AdGenerator:
@@ -496,36 +506,32 @@ class AdGenerator:
         overlay = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
         
-        # Draw abstract shapes
         import random
-        random.seed(42)  # Consistent patterns
+        random.seed(42)
         
         for _ in range(15):
             x = random.randint(0, self.width)
             y = random.randint(0, self.height)
             size = random.randint(50, 200)
             
-            # Random shape
-            shape_type = random.choice(['circle', 'square', 'triangle'])
+            shape_type = random.choice(['circle', 'square'])
             color = (*[random.randint(200, 255) for _ in range(3)], 30)
             
             if shape_type == 'circle':
                 draw.ellipse([x, y, x+size, y+size], fill=color)
-            elif shape_type == 'square':
+            else:
                 draw.rectangle([x, y, x+size, y+size], fill=color)
         
-        # Blur for smooth effect
         overlay = overlay.filter(ImageFilter.GaussianBlur(radius=20))
         img.paste(overlay, (0, 0), overlay)
         
         return img
     
     def add_logo(self, img: Image.Image, position: str = "top-right") -> Image.Image:
-        """Add logo at full size (255x72)"""
+        """Add logo at full size"""
         if not self.logo:
             return img
         
-        # Logo is small (255x72), use it at full size
         if position == "top-right":
             x = self.width - self.logo.width - 30
             y = 30
@@ -544,10 +550,9 @@ class AdGenerator:
     
     def draw_badge(self, img: Image.Image, text: str, x: int, y: int,
                    bg_color: str = BRAND_GOLD, text_color: str = BRAND_MAROON) -> Image.Image:
-        """Draw badge (NEW, OFFER, DISCOUNT, BEST SELLER)"""
+        """Draw badge"""
         draw = ImageDraw.Draw(img)
         
-        # Calculate badge size
         bbox = self.badge_font.getbbox(text)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
@@ -556,7 +561,6 @@ class AdGenerator:
         badge_width = text_width + padding * 2
         badge_height = text_height + padding
         
-        # Draw rounded rectangle badge
         draw.rounded_rectangle(
             [x, y, x + badge_width, y + badge_height],
             radius=10,
@@ -565,7 +569,6 @@ class AdGenerator:
             width=2
         )
         
-        # Draw text
         text_x = x + padding
         text_y = y + padding // 2
         draw.text((text_x, text_y), text, fill=text_color, font=self.badge_font)
@@ -574,12 +577,11 @@ class AdGenerator:
     
     def draw_cta_button(self, img: Image.Image, text: str, x: int, y: int,
                        width: int = 250) -> Image.Image:
-        """Draw CTA button (BUY NOW, SHOP NOW, ORDER NOW)"""
+        """Draw CTA button"""
         draw = ImageDraw.Draw(img)
         
         height = 70
         
-        # Draw button with gradient effect
         for i in range(height):
             factor = i / height
             r = int(139 * (1 - factor * 0.3))
@@ -587,7 +589,6 @@ class AdGenerator:
             b = int(0 * (1 - factor * 0.3))
             draw.line([(x, y + i), (x + width, y + i)], fill=(r, g, b))
         
-        # Add border
         draw.rounded_rectangle(
             [x, y, x + width, y + height],
             radius=15,
@@ -595,7 +596,6 @@ class AdGenerator:
             width=3
         )
         
-        # Draw text
         bbox = self.subtitle_font.getbbox(text)
         text_width = bbox[2] - bbox[0]
         text_x = x + (width - text_width) // 2
@@ -608,82 +608,80 @@ class AdGenerator:
     def draw_spec_with_icon(self, img: Image.Image, draw: ImageDraw.ImageDraw,
                            icon_name: str, text: str, x: int, y: int,
                            icon_size: int = 35, max_width: int = 400) -> int:
-        """Draw spec with icon and properly aligned wrapped text"""
+        """Draw spec with icon - FIXED ALIGNMENT"""
         # Get icon
         icon = get_icon(icon_name, icon_size)
         
-        # Calculate icon position (centered vertically with text)
+        # Calculate positions for proper alignment
         icon_y = y
+        text_x = x + icon_size + 20  # Increased spacing for better alignment
         
-        # Draw icon if available
+        # Draw icon centered vertically
         if icon:
             img.paste(icon, (x, icon_y - icon_size // 2), icon)
         
-        # Get font metrics for proper alignment
+        # Draw text with proper vertical alignment
         try:
-            # Get ascent and descent for proper vertical alignment
+            # Get font metrics
             ascent, descent = self.body_font.getmetrics()
             font_height = ascent + descent
+            text_y = icon_y - font_height // 2 + ascent
         except:
-            font_height = 30
-        
-        # Calculate text position (vertically centered with icon)
-        text_x = x + icon_size + 20
-        text_y = icon_y - font_height // 2 + ascent
+            text_y = icon_y - 10
         
         # Draw wrapped text
         final_y = draw_wrapped_text(
             draw, text, (text_x, text_y),
             self.body_font, "white", max_width,
-            line_spacing=12  # Increased spacing
+            line_spacing=10
         )
         
-        # Return the bottom position of the spec (whichever is lower: icon or text)
+        # Return the maximum bottom position
         icon_bottom = icon_y + icon_size // 2
         return max(final_y, icon_bottom) + 15
     
-    def add_contact_section(self, img: Image.Image, y_pos: int) -> Image.Image:
-        """Add contact section with call and WhatsApp separated"""
+    def add_contact_section_separate(self, img: Image.Image, y_pos: int) -> Image.Image:
+        """Add contact section with separate WhatsApp and Phone"""
         draw = ImageDraw.Draw(img)
         
         # Contact heading
-        #draw.text((self.width // 2, y_pos), "Contact Tripple K",
-        #         fill=BRAND_GOLD, font=self.subtitle_font, anchor="mm")
+        draw.text((self.width // 2, y_pos), "Contact Tripple K",
+                 fill=BRAND_GOLD, font=self.subtitle_font, anchor="mm")
         
         y_pos += 50
         
-        # Phone call
+        # Phone section - LEFT
+        phone_x = self.width // 2 - 200
+        
+        # WhatsApp section - RIGHT
+        whatsapp_x = self.width // 2 + 50
+        
+        # Phone icon and text
         call_icon = get_icon("call", 35)
-        whatsapp_icon = get_icon("whatsapp", 35)
-        
-        col1_x = self.width // 2 - 40
-        col2_x = self.width // 2 + 100
-        
-        # Align icons and text properly
-        icon_y = y_pos + 17
-        
         if call_icon:
-            img.paste(call_icon, (col1_x, icon_y - 17), call_icon)
-        draw.text((col1_x + 45, y_pos + 47), f"Call: {TRIPPLEK_PHONE}",
-                 fill="black", font=self.small_font, anchor="lm")
+            img.paste(call_icon, (phone_x, y_pos), call_icon)
+        draw.text((phone_x + 45, y_pos + 17), f"Call: {TRIPPLEK_PHONE}",
+                 fill="white", font=self.small_font, anchor="lm")
         
-        #if whatsapp_icon:
-        #    img.paste(whatsapp_icon, (col2_x, icon_y - 17), whatsapp_icon)
-        #draw.text((col2_x + 45, y_pos + 17), f"WhatsApp: {TRIPPLEK_PHONE}",
-        #         fill="black", font=self.small_font, anchor="lm")
+        # WhatsApp icon and text
+        whatsapp_icon = get_icon("whatsapp", 35)
+        if whatsapp_icon:
+            img.paste(whatsapp_icon, (whatsapp_x, y_pos), whatsapp_icon)
+        draw.text((whatsapp_x + 45, y_pos + 17), f"Chat: {TRIPPLEK_PHONE}",
+                 fill="white", font=self.small_font, anchor="lm")
         
         return img
     
     def add_social_icons(self, img: Image.Image, y_pos: int,
                         icons: List[str] = None) -> Image.Image:
-        """Add social media icons (excluding WhatsApp)"""
+        """Add social media icons"""
         if icons is None:
             icons = ["facebook", "x", "instagram", "tiktok"]
         
         icon_size = 40
         spacing = 25
         total_width = len(icons) * (icon_size + spacing) - spacing
-        start_x = (self.width - 300)
+        start_x = (self.width - total_width) // 2
         
         for i, icon_name in enumerate(icons):
             icon = get_icon(icon_name, icon_size)
@@ -694,7 +692,7 @@ class AdGenerator:
         return img
 
 # ==========================================
-# SPECIFIC AD GENERATORS
+# FACEBOOK AD GENERATOR WITH FIXED ALIGNMENT
 # ==========================================
 
 class FacebookAdGenerator(AdGenerator):
@@ -715,7 +713,7 @@ class FacebookAdGenerator(AdGenerator):
         # Add NEW badge
         self.draw_badge(img, "NEW", self.width - 200, 30)
         
-        # Get phone image (use selected or first available)
+        # Get phone image
         phone_img_url = selected_image_url
         if not phone_img_url and phone_data.get("id"):
             images = get_phone_images(phone_data["id"])
@@ -728,10 +726,11 @@ class FacebookAdGenerator(AdGenerator):
         if phone_img_url:
             phone_img = download_image(phone_img_url)
             if phone_img:
-                # Use resize for bigger image with better proportions
+                # Remove background and resize
+                phone_img = remove_background(phone_img)
                 phone_img = phone_img.resize((400, 500), Image.Resampling.LANCZOS)
                 x = 70
-                y = (self.height - phone_img.height) // 2 +50
+                y = (self.height - phone_img.height) // 2 + 50
                 img.paste(phone_img, (x, y), phone_img)
         
         draw = ImageDraw.Draw(img)
@@ -754,7 +753,7 @@ class FacebookAdGenerator(AdGenerator):
             self.title_font, "white", max_width
         ) + 30
         
-        # Specs with icons
+        # Specs with icons - FIXED ALIGNMENT
         specs = [
             ("screen", phone_data.get('screen', 'N/A')),
             ("camera", phone_data.get('main_camera', 'N/A')),
@@ -774,13 +773,20 @@ class FacebookAdGenerator(AdGenerator):
         cta_text = ad_elements.get('cta', 'SHOP NOW')
         self.draw_cta_button(img, cta_text, content_x, self.height - 130, 280)
         
+        # Contact section with separate WhatsApp and Phone
+        img = self.add_contact_section_separate(img, self.height - 180)
+        
         # Social icons
         self.add_social_icons(img, self.height - 50)
         
         return img
 
+# ==========================================
+# WHATSAPP AD GENERATOR WITH IMAGE LEFT, SPECS RIGHT
+# ==========================================
+
 class WhatsAppAdGenerator(AdGenerator):
-    """WhatsApp ad generator (1080x1080)"""
+    """WhatsApp ad generator (1080x1080) - Image left, specs right"""
     
     def __init__(self):
         super().__init__(1080, 1080)
@@ -791,15 +797,15 @@ class WhatsAppAdGenerator(AdGenerator):
         
         # Clean white background
         img = Image.new('RGB', (self.width, self.height), 'white')
+        draw = ImageDraw.Draw(img)
         
         # Add colored header
-        draw = ImageDraw.Draw(img)
         for y in range(150):
             factor = y / 150
             r = int(139 * (1 - factor) + 255 * factor)
             draw.line([(0, y), (self.width, y)], fill=(r, 0, 0))
         
-        # Add logo (full size)
+        # Add logo
         if self.logo:
             img.paste(self.logo, (40, 40), self.logo)
         
@@ -808,21 +814,14 @@ class WhatsAppAdGenerator(AdGenerator):
         # Brand name
         draw.text((320, 50), "TRIPPLE K COMMUNICATIONS",
                  fill="white", font=self.title_font)
-        draw.text((320, 100), "100% Genuine | Official Warranty",
+        draw.text((320, 90), "100% Genuine | Official Warranty",
                  fill=BRAND_GOLD, font=self.small_font)
         
         # Add badges
-        self.draw_badge(img, "BEST SELLER", self.width - 270, self.height//2 -300)
-        self.draw_badge(img, "OFFER", self.width - 270, self.height//2 - 200, bg_color=BRAND_ACCENT)
+        self.draw_badge(img, "BEST SELLER", self.width - 220, 50)
+        self.draw_badge(img, "OFFER", self.width - 220, 110, bg_color=BRAND_ACCENT)
         
-        # Get phone image
-        content_y = 180
-
-        # Phone name
-        content_y = draw_wrapped_text(
-            draw, phone_data.get("name", ""), (300, content_y),
-            self.title_font, BRAND_MAROON, self.width, line_spacing=10
-        ) + 30
+        # Get phone image for left side
         phone_img_url = selected_image_url
         if not phone_img_url and phone_data.get("id"):
             images = get_phone_images(phone_data["id"])
@@ -831,70 +830,61 @@ class WhatsAppAdGenerator(AdGenerator):
         if not phone_img_url:
             phone_img_url = phone_data.get("cover")
         
+        # LEFT COLUMN: Phone Image
+        left_col_x = 40
+        left_col_y = 180
+        
         if phone_img_url:
             phone_img = download_image(phone_img_url)
             if phone_img:
-                # Resize for taller image
-                phone_img = phone_img.resize((450, 550), Image.Resampling.LANCZOS)
-                x = (self.width - phone_img.width) // 2
-                img.paste(phone_img, (x, content_y), phone_img)
-                content_y += phone_img.height + 30
+                # Remove background and resize
+                phone_img = remove_background(phone_img)
+                phone_img = phone_img.resize((400, 500), Image.Resampling.LANCZOS)
+                img.paste(phone_img, (left_col_x, left_col_y), phone_img)
         
-        draw = ImageDraw.Draw(img)
+        # RIGHT COLUMN: Specs
+        right_col_x = 500
+        right_col_y = 180
         
+        # Phone name
+        right_col_y = draw_wrapped_text(
+            draw, phone_data.get("name", ""), (right_col_x, right_col_y),
+            self.title_font, BRAND_MAROON, self.width - right_col_x - 40, line_spacing=10
+        ) + 30
         
-        
-        # Specs in two columns with better alignment
-        col1_x = self.width // 4
-        col2_x = 3 * self.width // 4
-        
-        specs_col1 = [
+        # Specs with icons
+        specs = [
             ("screen", phone_data.get('screen', 'N/A')),
             ("camera", phone_data.get('main_camera', 'N/A')),
-            ("processor", phone_data.get('chipset', 'N/A')),
-        ]
-        
-        specs_col2 = [
             ("memory", phone_data.get('ram', 'N/A')),
             ("storage", phone_data.get('storage', 'N/A')),
             ("battery", phone_data.get('battery', 'N/A')),
         ]
         
-        spec_y = content_y
-        for icon_name, spec_text in specs_col1:
+        for icon_name, spec_text in specs:
             if spec_text != "N/A":
-                icon = get_icon(icon_name, 30)
-                if icon:
-                    # Align icon properly
-                    img.paste(icon, (col1_x - 40, spec_y - 15), icon)
-                
-                # Draw text with proper line spacing
-                draw.text((col1_x, spec_y), spec_text, fill="#333", font=self.body_font, anchor="lm")
-                spec_y += 40  # Increased spacing between specs
-        
-        spec_y = content_y
-        for icon_name, spec_text in specs_col2:
-            if spec_text != "N/A":
-                icon = get_icon(icon_name, 30)
-                if icon:
-                    img.paste(icon, (col2_x - 40, spec_y - 15), icon)
-                
-                draw.text((col2_x, spec_y), spec_text, fill="#333", font=self.body_font, anchor="lm")
-                spec_y += 40
-        
-        content_y = max(spec_y, content_y + len(specs_col1) * 40) + 20
+                right_col_y = self.draw_spec_with_icon(
+                    img, draw, icon_name, spec_text,
+                    right_col_x, right_col_y, 30, 350
+                )
+                # Change text color for right column
+                draw = ImageDraw.Draw(img)  # Refresh draw object
         
         # CTA button
         cta_text = ad_elements.get('cta', 'ORDER NOW')
-        self.draw_cta_button(img, cta_text, (self.width - 300) // 2, content_y, 300)
+        self.draw_cta_button(img, cta_text, (self.width - 300) // 2, max(right_col_y, 700), 300)
         
-        # Contact section
-        img = self.add_contact_section(img, self.height - 180)
+        # Contact section with separate WhatsApp and Phone
+        img = self.add_contact_section_separate(img, self.height - 180)
         
-        # Social icons (excluding WhatsApp)
+        # Social icons
         img = self.add_social_icons(img, self.height - 80)
         
         return img
+
+# ==========================================
+# INSTAGRAM AD GENERATOR
+# ==========================================
 
 class InstagramAdGenerator(AdGenerator):
     """Instagram ad generator (1080x1350)"""
@@ -928,7 +918,8 @@ class InstagramAdGenerator(AdGenerator):
         if phone_img_url:
             phone_img = download_image(phone_img_url)
             if phone_img:
-                # Add shadow effect
+                # Remove background
+                phone_img = remove_background(phone_img)
                 phone_img = phone_img.resize((550, 550), Image.Resampling.LANCZOS)
                 
                 # Create shadow
@@ -955,7 +946,7 @@ class InstagramAdGenerator(AdGenerator):
             self.title_font, "white", self.width - 100
         ) + 40
         
-        # Featured specs horizontally
+        # Featured specs
         featured_specs = [
             ("camera", phone_data.get('main_camera', 'N/A').split('+')[0]),
             ("processor", phone_data.get('chipset', 'N/A')[:15] + "..."),
@@ -963,7 +954,6 @@ class InstagramAdGenerator(AdGenerator):
             ("battery", phone_data.get('battery', 'N/A')),
         ]
         
-        # Filter N/A
         featured_specs = [(icon, text) for icon, text in featured_specs if text != "N/A"]
         
         if featured_specs:
@@ -973,17 +963,15 @@ class InstagramAdGenerator(AdGenerator):
             for i, (icon_name, spec_text) in enumerate(featured_specs):
                 x_pos = spec_spacing * (i + 1)
                 
-                # Draw icon
                 icon = get_icon(icon_name, 60)
                 if icon:
                     img.paste(icon, (x_pos - 30, content_y - 30), icon)
                 
-                # Draw spec text below with proper alignment
                 lines = wrap_text(spec_text, self.small_font, 100)
                 text_y = content_y + 40
                 for line in lines:
                     draw.text((x_pos, text_y), line, fill="white", font=self.small_font, anchor="mm")
-                    text_y += 25  # Increased line spacing
+                    text_y += 20
             
             content_y += 120
         
@@ -991,16 +979,16 @@ class InstagramAdGenerator(AdGenerator):
         cta_text = ad_elements.get('cta', 'BUY NOW')
         self.draw_cta_button(img, cta_text, (self.width - 350) // 2, content_y, 350)
         
-        # Social icons
-        img = self.add_social_icons(img, self.height - 200)
+        # Contact section with separate WhatsApp and Phone
+        img = self.add_contact_section_separate(img, self.height - 200)
         
-        # Contact info
-        img = self.add_contact_section(img, self.height - 120)
+        # Social icons
+        img = self.add_social_icons(img, self.height - 120)
         
         return img
 
 # ==========================================
-# GROQ API WITH ERROR HANDLING
+# GROQ API FUNCTIONS
 # ==========================================
 
 class RateLimiter:
@@ -1025,7 +1013,7 @@ class RateLimiter:
 rate_limiter = RateLimiter()
 
 def generate_marketing_content(phone_data: dict, persona: str, tone: str) -> Optional[Dict[str, str]]:
-    """Generate marketing content with enhanced error handling"""
+    """Generate marketing content"""
     if not client:
         return None
     
@@ -1074,18 +1062,15 @@ Hashtags: [7-10 relevant hashtags]"""
     except Exception as e:
         error_msg = str(e)
         if "403" in error_msg or "Access denied" in error_msg:
-            st.error("🚫 API Access Denied. Please check:\n"
-                    "1. API key is valid\n"
-                    "2. Network/firewall settings\n"
-                    "3. Groq API status")
-        elif "429" in error_msg or "rate" in error_msg.lower():
-            st.error("⏱️ Rate limit exceeded. Please wait and try again.")
+            st.error("🚫 API Access Denied")
+        elif "429" in error_msg:
+            st.error("⏱️ Rate limit exceeded")
         else:
             st.error(f"❌ Error: {error_msg}")
         return None
 
 def parse_marketing_response(text: str) -> Dict[str, str]:
-    """Parse AI response into structured content"""
+    """Parse AI response"""
     content = {
         "hook": "", "cta": "", "urgency": "",
         "tiktok": "", "whatsapp": "", "facebook": "",
@@ -1107,7 +1092,7 @@ def parse_marketing_response(text: str) -> Dict[str, str]:
     return content
 
 # ==========================================
-# MAIN APPLICATION WITH IMPROVED LAYOUT
+# MAIN APPLICATION
 # ==========================================
 
 def main():
@@ -1176,7 +1161,7 @@ def main():
                             with col_img:
                                 if images:
                                     st.markdown("### Phone Image")
-                                    # Just show first image, no selector
+                                    # Let Streamlit handle the image display
                                     st.image(images[0], use_container_width=True, caption=phone_data['name'])
                             with col_specs:
                                 st.markdown('<div class="specs-container">', unsafe_allow_html=True)
@@ -1271,7 +1256,7 @@ def main():
             if st.session_state.phone_images and st.session_state.selected_image_index < len(st.session_state.phone_images):
                 selected_image_url = st.session_state.phone_images[st.session_state.selected_image_index]
             
-            st.info(f"Using Image {st.session_state.selected_image_index + 1} of {len(st.session_state.phone_images)} available images")
+            st.info(f"Using first available image")
             
             ad_types = st.multiselect("Select ad formats:",
                 ["Facebook Ad (1200x630)", "WhatsApp Ad (1080x1080)", "Instagram Ad (1080x1350)"],
@@ -1326,13 +1311,25 @@ def main():
                             key=f"dl_{ad_type}"
                         )
     
-    # Footer
+    # Footer with separate contact info
     st.divider()
     st.markdown(f"""
     <div style="text-align: center; color: {BRAND_MAROON}; padding: 1rem;">
         <h3>Tripple K Communications</h3>
-        <p>📞 {TRIPPLEK_PHONE} | 🌐 {TRIPPLEK_URL}</p>
-        <p style="font-size: 0.9em; color: #666;">Professional Phone Marketing Suite v3.0</p>
+        <div class="contact-section">
+            <div class="contact-item">
+                <img src="{ICON_URLS['call']}" width="24" height="24">
+                <span><strong>Call:</strong> {TRIPPLEK_PHONE}</span>
+            </div>
+            <div class="contact-item">
+                <img src="{ICON_URLS['whatsapp']}" width="24" height="24">
+                <span><strong>WhatsApp:</strong> {TRIPPLEK_PHONE}</span>
+            </div>
+            <div class="contact-item">
+                <span><strong>Website:</strong> {TRIPPLEK_URL}</span>
+            </div>
+        </div>
+        <p style="font-size: 0.9em; color: #666; margin-top: 1rem;">Professional Phone Marketing Suite v4.0</p>
     </div>
     """, unsafe_allow_html=True)
 
