@@ -26,6 +26,7 @@ BRAND_GOLD = "#FFD700"
 BRAND_ACCENT = "#FF6B35"
 BRAND_WHITE = "#FFFFFF"
 BRAND_BLACK = "#333333"
+LIGHT_BG = "#F8F9FA"
 
 # Contact info
 TRIPPLEK_PHONE = "+254700123456"
@@ -52,7 +53,8 @@ ICON_MAP = {
     "facebook": "👤",
     "x": "🐦",
     "instagram": "📷",
-    "tiktok": "🎵"
+    "tiktok": "🎵",
+    "price": "💰"
 }
 
 # Rate limiting
@@ -188,11 +190,29 @@ st.markdown(f"""
         border-color: {BRAND_MAROON} !important;
         background-color: #f8f0f0;
     }}
+    
+    .price-input {{
+        background: linear-gradient(135deg, {BRAND_GOLD}20 0%, {BRAND_ACCENT}20 100%);
+        border: 2px solid {BRAND_GOLD} !important;
+        border-radius: 10px !important;
+        padding: 12px !important;
+        font-weight: bold !important;
+        color: {BRAND_MAROON} !important;
+    }}
+    
+    .stNumberInput > div > div > input {{
+        background: linear-gradient(135deg, {BRAND_GOLD}20 0%, {BRAND_ACCENT}20 100%);
+        border: 2px solid {BRAND_GOLD} !important;
+        border-radius: 10px !important;
+        padding: 12px !important;
+        font-weight: bold !important;
+        color: {BRAND_MAROON} !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# UTILITY FUNCTIONS - FIXED
+# UTILITY FUNCTIONS - IMPROVED
 # ==========================================
 
 def retry_on_error(max_retries=3, delay=1):
@@ -214,7 +234,7 @@ def retry_on_error(max_retries=3, delay=1):
 @st.cache_data(ttl=3600)
 @retry_on_error(max_retries=2)
 def download_image_safe(url: str) -> Optional[Image.Image]:
-    """Download image safely"""
+    """Download image safely with background removal"""
     try:
         # Add timeout and headers to mimic browser
         headers = {
@@ -238,23 +258,40 @@ def download_image_safe(url: str) -> Optional[Image.Image]:
 def get_logo_safe() -> Optional[Image.Image]:
     """Get logo with proper transparency handling"""
     try:
-        img = download_image_safe(LOGO_URL)
-        if img:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(LOGO_URL, timeout=10, headers=headers)
+        if response.status_code == 200:
+            img = Image.open(BytesIO(response.content))
+            
+            # Keep transparency if image has alpha channel
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGBA')
+                # Remove white background
+                data = img.getdata()
+                new_data = []
+                for item in data:
+                    # If pixel is white (or near white), make transparent
+                    if item[0] > 220 and item[1] > 220 and item[2] > 220:
+                        new_data.append((255, 255, 255, 0))
+                    else:
+                        new_data.append(item)
+                img.putdata(new_data)
+            else:
+                img = img.convert('RGBA')
+            
             # Resize logo
-            img = img.resize((150, 50), Image.Resampling.LANCZOS)
-        return img
+            img = img.resize((180, 60), Image.Resampling.LANCZOS)
+            return img
     except Exception as e:
         print(f"Logo error: {e}")
-        return None
+    return None
 
 def get_phone_images(phone_id: str) -> List[str]:
-    """Get phone images from API - FIXED according to API documentation"""
+    """Get phone images from API"""
     try:
-        # According to API: GET /gsm/images/:id
-        # Example: /gsm/images/xiaomi_poco_x3_pro-pictures-10802.php
         url = f"{IMAGES_ENDPOINT}/{phone_id}"
-        print(f"Fetching images from: {url}")
-        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -262,43 +299,28 @@ def get_phone_images(phone_id: str) -> List[str]:
         
         if response.status_code == 200:
             data = response.json()
-            print(f"Image API response keys: {list(data.keys()) if isinstance(data, dict) else 'list'}")
             
             # Extract images array from response
-            if isinstance(data, dict):
-                if "images" in data:
-                    images = data["images"]
-                    if isinstance(images, list):
-                        # Filter valid URLs
-                        valid_images = [img for img in images if isinstance(img, str) and img.startswith('http')]
-                        print(f"Found {len(valid_images)} valid images")
-                        return valid_images[:10]  # Return up to 10 images
-                else:
-                    # Try other possible keys
-                    for key in ['pictures', 'photos', 'gallery']:
-                        if key in data and isinstance(data[key], list):
-                            images = data[key]
-                            valid_images = [img for img in images if isinstance(img, str) and img.startswith('http')]
-                            print(f"Found {len(valid_images)} images in key '{key}'")
-                            return valid_images[:10]
+            if isinstance(data, dict) and "images" in data:
+                images = data["images"]
+                if isinstance(images, list):
+                    # Filter valid URLs
+                    valid_images = [img for img in images if isinstance(img, str) and img.startswith('http')]
+                    return valid_images[:10]
             elif isinstance(data, list):
                 # Direct array of URLs
                 valid_images = [img for img in data if isinstance(img, str) and img.startswith('http')]
                 return valid_images[:10]
                 
-    except requests.exceptions.Timeout:
-        st.error(f"⏰ Timeout getting images for {phone_id}")
     except Exception as e:
-        st.error(f"❌ Error getting images for {phone_id}: {e}")
+        print(f"Error getting images for {phone_id}: {e}")
     
     return []
 
 def search_phones(query: str) -> List[Dict[str, Any]]:
-    """Search for phones - FIXED according to API documentation"""
+    """Search for phones"""
     try:
         url = f"{SEARCH_ENDPOINT}?q={requests.utils.quote(query)}"
-        print(f"Searching: {url}")
-        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -306,94 +328,99 @@ def search_phones(query: str) -> List[Dict[str, Any]]:
         
         if response.status_code == 200:
             results = response.json()
-            print(f"Found {len(results) if results else 0} results")
             return results or []
-        else:
-            st.error(f"❌ Search failed with status: {response.status_code}")
     except Exception as e:
-        st.error(f"❌ Search error: {e}")
+        print(f"Search error: {e}")
     
     return []
 
 def get_phone_details(phone_id: str) -> Optional[Dict[str, Any]]:
     """Get detailed phone information from API"""
     try:
-        # According to API: GET /gsm/info/:id
         url = f"{INFO_ENDPOINT}/{phone_id}"
-        print(f"Fetching phone details from: {url}")
-        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         response = requests.get(url, timeout=15, headers=headers)
         
         if response.status_code == 200:
-            data = response.json()
-            print(f"Got phone details, keys: {list(data.keys())}")
-            return data
-        else:
-            st.error(f"❌ Failed to get phone details: HTTP {response.status_code}")
+            return response.json()
     except Exception as e:
-        st.error(f"❌ Error getting phone details: {e}")
+        print(f"Error getting phone details: {e}")
     
     return None
 
 def extract_image_id_from_search_result(phone_data: Dict[str, Any]) -> str:
     """Extract the correct image ID from search result"""
-    # According to API documentation:
-    # Search returns: "id": "xiaomi_poco_x3_pro-10802.php"
-    # Images endpoint expects: "xiaomi_poco_x3_pro-pictures-10802.php"
-    
     phone_id = phone_data.get("id", "")
-    print(f"Original phone ID: {phone_id}")
-    
     if phone_id and "-" in phone_id:
-        # Convert "xiaomi_poco_x3_pro-10802.php" to "xiaomi_poco_x3_pro-pictures-10802.php"
         parts = phone_id.split("-")
-        print(f"Parts: {parts}")
-        
         if len(parts) >= 2:
-            # Join all parts except the last one, add "pictures", then add the last part
             base = "-".join(parts[:-1])
             number_part = parts[-1]
-            result = f"{base}-pictures-{number_part}"
-            print(f"Converted image ID: {result}")
-            return result
-    
-    print(f"Returning original ID: {phone_id}")
+            return f"{base}-pictures-{number_part}"
     return phone_id
 
-def simple_background_removal(image: Image.Image) -> Image.Image:
-    """Remove white background simply"""
+def remove_white_background(image: Image.Image) -> Image.Image:
+    """Remove white background from image"""
     try:
-        # Convert to RGBA
-        img = image.convert('RGBA')
-        data = img.getdata()
+        # Convert to RGBA if not already
+        if image.mode != 'RGBA':
+            image = image.convert('RGBA')
         
+        data = image.getdata()
         new_data = []
+        
         for item in data:
-            # If pixel is white (or near white), make transparent
-            if item[0] > 220 and item[1] > 220 and item[2] > 220:
+            # Check if pixel is white or near white
+            r, g, b, a = item
+            if r > 220 and g > 220 and b > 220:
+                # Make transparent
                 new_data.append((255, 255, 255, 0))
             else:
+                # Keep original
                 new_data.append(item)
         
-        img.putdata(new_data)
-        return img
+        image.putdata(new_data)
+        return image
     except:
         return image
 
+def create_transparent_phone_image(image_url: str, size: Tuple[int, int]) -> Optional[Image.Image]:
+    """Create phone image with transparent background"""
+    try:
+        phone_img = download_image_safe(image_url)
+        if phone_img:
+            # Remove background
+            phone_img = remove_white_background(phone_img)
+            
+            # Resize to fit
+            phone_img.thumbnail(size, Image.Resampling.LANCZOS)
+            
+            # Create a new transparent image
+            transparent_img = Image.new('RGBA', size, (255, 255, 255, 0))
+            
+            # Calculate position to center the phone
+            x = (size[0] - phone_img.width) // 2
+            y = (size[1] - phone_img.height) // 2
+            
+            # Paste phone onto transparent background
+            transparent_img.paste(phone_img, (x, y), phone_img if phone_img.mode == 'RGBA' else None)
+            
+            return transparent_img
+    except Exception as e:
+        print(f"Error creating transparent phone image: {e}")
+    
+    return None
+
 # ==========================================
-# SPEC PARSING - IMPROVED WITH DETAILED INFO
+# SPEC PARSING - IMPROVED
 # ==========================================
 
 def parse_phone_specs_from_detailed_info(detailed_data: dict, search_data: dict) -> Dict[str, Any]:
     """Parse phone specs from detailed API response"""
     if not detailed_data:
-        # Fallback to search data
         return parse_phone_specs_from_search(search_data)
-    
-    print(f"Parsing detailed data with keys: {list(detailed_data.keys())}")
     
     # Extract basic info
     name = detailed_data.get("name", search_data.get("name", "Unknown Phone"))
@@ -411,7 +438,6 @@ def parse_phone_specs_from_detailed_info(detailed_data: dict, search_data: dict)
         if inches_match:
             screen = f"{inches_match.group(1)} inches"
         else:
-            # Try to extract just the number
             num_match = re.search(r'(\d+\.?\d*)', screen_size)
             if num_match:
                 screen = f"{num_match.group(1)} inches"
@@ -421,12 +447,11 @@ def parse_phone_specs_from_detailed_info(detailed_data: dict, search_data: dict)
     camera_specs = main_camera.get("modules", "")
     camera = "N/A"
     if camera_specs and isinstance(camera_specs, str):
-        # Extract MP values
         mp_matches = re.findall(r'(\d+\.?\d*)\s*MP', camera_specs, re.IGNORECASE)
         if mp_matches:
             camera = " + ".join(mp_matches[:3])
     
-    # Extract RAM and storage from memory section
+    # Extract RAM and storage
     memory_info = detailed_data.get("memory", {})
     ram = "N/A"
     storage = "N/A"
@@ -434,25 +459,19 @@ def parse_phone_specs_from_detailed_info(detailed_data: dict, search_data: dict)
     if isinstance(memory_info, dict):
         internal = memory_info.get("internal", "")
         if internal and isinstance(internal, str):
-            # Look for RAM
             ram_match = re.search(r'(\d+)\s*GB\s*RAM', internal, re.IGNORECASE)
             if ram_match:
                 ram = f"{ram_match.group(1)}GB"
             
-            # Look for storage
             storage_match = re.search(r'(\d+)\s*GB\s*(?:ROM|storage|internal)', internal, re.IGNORECASE)
             if storage_match:
                 storage = f"{storage_match.group(1)}GB"
     
     # Extract battery
     battery_info = detailed_data.get("battery", {})
-    battery = battery_info.get("type", "N/A")
-    if battery == "N/A":
-        batt_type = battery_info.get("battType", "N/A")
-        if batt_type and batt_type != "N/A":
-            battery = batt_type
+    battery = battery_info.get("type", battery_info.get("battType", "N/A"))
     
-    # Extract chipset and OS
+    # Extract chipset
     platform = detailed_data.get("platform", {})
     chipset = platform.get("chipset", "N/A")
     os_info = platform.get("os", "N/A")
@@ -468,7 +487,7 @@ def parse_phone_specs_from_detailed_info(detailed_data: dict, search_data: dict)
         "battery": battery,
         "chipset": chipset,
         "os": os_info,
-        "detailed_data": detailed_data,  # Store the full data for reference
+        "detailed_data": detailed_data,
     }
 
 def parse_phone_specs_from_search(phone_data: dict) -> Dict[str, Any]:
@@ -476,15 +495,10 @@ def parse_phone_specs_from_search(phone_data: dict) -> Dict[str, Any]:
     if not phone_data:
         return {"name": "Unknown Phone", "id": "unknown"}
     
-    # Extract basic info from search result
-    name = phone_data.get("name", "Unknown Phone")
-    phone_id = phone_data.get("id", "")
-    image_url = phone_data.get("image", "")
-    
     return {
-        "name": name,
-        "id": phone_id,
-        "image_url": image_url,
+        "name": phone_data.get("name", "Unknown Phone"),
+        "id": phone_data.get("id", ""),
+        "image_url": phone_data.get("image", ""),
         "screen": "Check details",
         "camera": "Check details",
         "ram": "Check details",
@@ -495,78 +509,75 @@ def parse_phone_specs_from_search(phone_data: dict) -> Dict[str, Any]:
     }
 
 # ==========================================
-# AD LAYOUTS - PREDEFINED POSITIONS
+# AD LAYOUTS - REDESIGNED WITH MORE PHONE SPACE
 # ==========================================
 
 AD_LAYOUTS = {
     "facebook": {
-        "size": (1200, 630),
+        "size": (1200, 800),  # Increased height for more space
         "background": BRAND_MAROON,
         "regions": {
-            "logo": {"x": 50, "y": 30, "width": 150, "height": 50},
+            "logo": {"x": 50, "y": 30, "width": 180, "height": 60},
             "brand": {"x": 850, "y": 30, "width": 300, "height": 60},
-            "phone": {"x": 50, "y": 100, "width": 500, "height": 400},
-            "content": {"x": 600, "y": 100, "width": 550, "height": 400},
-            "cta": {"x": 600, "y": 520, "width": 280, "height": 60},
-            "contact": {"x": 50, "y": 520, "width": 500, "height": 80},
+            "phone": {"x": 50, "y": 120, "width": 650, "height": 500},  # More space for phone
+            "content": {"x": 750, "y": 120, "width": 400, "height": 400},
+            "price": {"x": 750, "y": 540, "width": 400, "height": 60},
+            "cta": {"x": 750, "y": 620, "width": 180, "height": 60},
+            "contact": {"x": 940, "y": 620, "width": 210, "height": 60},
         }
     },
     "whatsapp": {
-        "size": (1080, 1080),
+        "size": (1080, 1350),  # More vertical space
         "background": BRAND_WHITE,
         "regions": {
-            "logo": {"x": 50, "y": 30, "width": 150, "height": 50},
-            "brand": {"x": 220, "y": 30, "width": 300, "height": 60},
-            "phone": {"x": 50, "y": 120, "width": 450, "height": 500},
-            "content": {"x": 550, "y": 120, "width": 480, "height": 500},
-            "cta": {"x": 390, "y": 900, "width": 300, "height": 60},
-            "contact": {"x": 50, "y": 700, "width": 450, "height": 80},
+            "logo": {"x": 50, "y": 30, "width": 180, "height": 60},
+            "brand": {"x": 250, "y": 30, "width": 300, "height": 60},
+            "phone": {"x": 50, "y": 120, "width": 600, "height": 600},  # More space
+            "content": {"x": 680, "y": 120, "width": 350, "height": 500},
+            "price": {"x": 680, "y": 640, "width": 350, "height": 60},
+            "cta": {"x": 680, "y": 720, "width": 170, "height": 60},
+            "contact": {"x": 860, "y": 720, "width": 170, "height": 60},
         }
     },
     "instagram": {
-        "size": (1080, 1350),
+        "size": (1080, 1620),  # Even more vertical space
         "background": BRAND_MAROON,
         "regions": {
-            "logo": {"x": 465, "y": 30, "width": 150, "height": 50},
-            "brand": {"x": 540, "y": 90, "width": 300, "height": 40},
-            "phone": {"x": 140, "y": 150, "width": 800, "height": 500},
-            "content": {"x": 100, "y": 680, "width": 880, "height": 400},
-            "cta": {"x": 390, "y": 1100, "width": 300, "height": 60},
-            "contact": {"x": 100, "y": 1200, "width": 880, "height": 80},
+            "logo": {"x": 450, "y": 30, "width": 180, "height": 60},
+            "brand": {"x": 540, "y": 100, "width": 300, "height": 40},
+            "phone": {"x": 90, "y": 160, "width": 900, "height": 700},  # Much more space
+            "content": {"x": 100, "y": 880, "width": 880, "height": 400},
+            "price": {"x": 100, "y": 1300, "width": 880, "height": 60},
+            "cta": {"x": 390, "y": 1380, "width": 150, "height": 60},
+            "contact": {"x": 550, "y": 1380, "width": 200, "height": 60},
         }
     }
 }
 
 # ==========================================
-# AD GENERATOR - FIXED
+# AD GENERATOR - IMPROVED WITH PRICE AND BETTER LAYOUT
 # ==========================================
 
 class SimpleAdGenerator:
-    """Simple ad generator with fixed layouts"""
+    """Improved ad generator with price support and better layouts"""
     
     def __init__(self, platform: str = "facebook"):
         self.platform = platform
         self.layout = AD_LAYOUTS[platform]
         self.width, self.height = self.layout["size"]
         
-        # Try to load Poppins font, fallback to default
+        # Try to load Poppins font
         try:
-            # Try with the exact filename
-            self.title_font = ImageFont.truetype("poppins.ttf", 36 if platform == "facebook" else 42)
-            self.subtitle_font = ImageFont.truetype("poppins.ttf", 24 if platform == "facebook" else 28)
-            self.body_font = ImageFont.truetype("poppins.ttf", 18 if platform == "facebook" else 20)
-            self.small_font = ImageFont.truetype("poppins.ttf", 14 if platform == "facebook" else 16)
+            # Adjust font sizes for new layout
+            self.title_font = ImageFont.truetype("poppins.ttf", 42 if platform == "instagram" else 36)
+            self.subtitle_font = ImageFont.truetype("poppins.ttf", 28 if platform == "instagram" else 24)
+            self.body_font = ImageFont.truetype("poppins.ttf", 22 if platform == "instagram" else 18)
+            self.small_font = ImageFont.truetype("poppins.ttf", 16 if platform == "instagram" else 14)
+            self.price_font = ImageFont.truetype("poppins.ttf", 32 if platform == "instagram" else 28)
         except:
-            try:
-                # Try with Arial as fallback
-                self.title_font = ImageFont.truetype("arialbd.ttf", 36 if platform == "facebook" else 42)
-                self.subtitle_font = ImageFont.truetype("arialbd.ttf", 24 if platform == "facebook" else 28)
-                self.body_font = ImageFont.truetype("arial.ttf", 18 if platform == "facebook" else 20)
-                self.small_font = ImageFont.truetype("arial.ttf", 14 if platform == "facebook" else 16)
-            except:
-                # Fallback to default font
-                default = ImageFont.load_default()
-                self.title_font = self.subtitle_font = self.body_font = self.small_font = default
+            # Fallback to default
+            default = ImageFont.load_default()
+            self.title_font = self.subtitle_font = self.body_font = self.small_font = self.price_font = default
     
     def hex_to_rgb(self, hex_color: str) -> Tuple[int, int, int]:
         """Convert hex color to RGB"""
@@ -574,9 +585,25 @@ class SimpleAdGenerator:
         return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
     
     def create_base_image(self) -> Image.Image:
-        """Create base image with background color"""
-        bg_color = self.hex_to_rgb(self.layout["background"])
-        return Image.new('RGB', (self.width, self.height), bg_color)
+        """Create base image with gradient background"""
+        # Create gradient background
+        base_color = self.hex_to_rgb(self.layout["background"])
+        img = Image.new('RGB', (self.width, self.height), base_color)
+        
+        # Add subtle gradient
+        if self.platform in ["facebook", "instagram"]:
+            # Darker gradient for dark backgrounds
+            for y in range(self.height):
+                for x in range(self.width):
+                    r, g, b = base_color
+                    # Darken edges
+                    darken = min(0.9, (abs(x - self.width/2) / (self.width/2)) * 0.3)
+                    r = int(r * (1 - darken))
+                    g = int(g * (1 - darken))
+                    b = int(b * (1 - darken))
+                    img.putpixel((x, y), (r, g, b))
+        
+        return img
     
     def draw_logo(self, img: Image.Image) -> Image.Image:
         """Draw logo in designated region"""
@@ -587,7 +614,21 @@ class SimpleAdGenerator:
             # Center logo in region
             x = region["x"] + (region["width"] - logo.width) // 2
             y = region["y"] + (region["height"] - logo.height) // 2
-            img.paste(logo, (x, y))
+            
+            # Create a circular background for the logo
+            if self.platform in ["facebook", "instagram"]:
+                # Add gold circle behind logo
+                draw = ImageDraw.Draw(img, 'RGBA')
+                circle_x = x + logo.width // 2
+                circle_y = y + logo.height // 2
+                radius = max(logo.width, logo.height) // 2 + 10
+                draw.ellipse(
+                    [circle_x - radius, circle_y - radius, circle_x + radius, circle_y + radius],
+                    fill=(255, 215, 0, 100)  # Gold with transparency
+                )
+            
+            # Paste logo with transparency
+            img.paste(logo, (x, y), logo if logo.mode == 'RGBA' else None)
         
         return img
     
@@ -616,71 +657,114 @@ class SimpleAdGenerator:
         )
     
     def draw_phone_image(self, img: Image.Image, phone_img_url: str) -> Image.Image:
-        """Draw phone image in designated region"""
+        """Draw phone image with transparent background in designated region"""
         if not phone_img_url:
             return img
         
         region = self.layout["regions"]["phone"]
-        phone_img = download_image_safe(phone_img_url)
+        
+        # Create phone image with transparent background
+        phone_img = create_transparent_phone_image(phone_img_url, (region["width"], region["height"]))
         
         if phone_img:
-            # Resize to fit region
-            phone_img.thumbnail((region["width"], region["height"]), Image.Resampling.LANCZOS)
-            
             # Center in region
             x = region["x"] + (region["width"] - phone_img.width) // 2
             y = region["y"] + (region["height"] - phone_img.height) // 2
             
-            # Add white border
-            border_size = 5
-            bordered = Image.new('RGB', 
-                               (phone_img.width + border_size*2, 
-                                phone_img.height + border_size*2), 
-                               self.hex_to_rgb(BRAND_WHITE))
-            bordered.paste(phone_img, (border_size, border_size))
+            # Add subtle shadow effect
+            if self.platform in ["facebook", "instagram"]:
+                shadow = Image.new('RGBA', (phone_img.width + 20, phone_img.height + 20), (0, 0, 0, 50))
+                img.paste(shadow, (x - 10, y - 10), shadow)
             
-            img.paste(bordered, (x, y))
+            # Paste phone image
+            img.paste(phone_img, (x, y), phone_img if phone_img.mode == 'RGBA' else None)
+            
+            # Add glowing effect
+            draw = ImageDraw.Draw(img, 'RGBA')
+            glow_color = (255, 215, 0, 30) if self.platform in ["facebook", "instagram"] else (139, 0, 0, 30)
+            draw.ellipse(
+                [x + phone_img.width//4, y + phone_img.height - 20, 
+                 x + 3*phone_img.width//4, y + phone_img.height + 20],
+                fill=glow_color
+            )
         
         return img
     
     def draw_content(self, img: Image.Image, draw: ImageDraw.ImageDraw, 
-                    phone_data: dict, hook: str = "", cta: str = ""):
+                    phone_data: dict, hook: str = "", price: str = ""):
         """Draw content in designated region"""
         region = self.layout["regions"]["content"]
         x, y = region["x"], region["y"]
-        max_width = region["width"]
         
         # Text color based on platform
         text_color = BRAND_WHITE if self.platform in ["facebook", "instagram"] else BRAND_BLACK
+        accent_color = BRAND_GOLD
         
         # Hook text (if provided)
         if hook:
-            draw.text((x, y), hook, fill=BRAND_GOLD, font=self.title_font)
-            y += 50
+            draw.text((x, y), hook, fill=accent_color, font=self.title_font)
+            y += 60
+        else:
+            # Default hook
+            draw.text((x, y), f"NEW ARRIVAL", fill=accent_color, font=self.subtitle_font)
+            y += 40
         
         # Phone name
-        draw.text((x, y), phone_data["name"], fill=text_color, font=self.title_font)
-        y += 60
+        phone_name = phone_data["name"][:30] + "..." if len(phone_data["name"]) > 30 else phone_data["name"]
+        draw.text((x, y), phone_name, fill=text_color, font=self.title_font)
+        y += 70
         
-        # Specs with emoji icons
+        # Key specs with emoji icons - 5 specs: Screen, Camera, RAM, Storage, Chipset
         specs = [
             ("screen", "Screen", phone_data.get("screen", "N/A")),
             ("camera", "Camera", phone_data.get("camera", "N/A")),
             ("memory", "RAM", phone_data.get("ram", "N/A")),
             ("storage", "Storage", phone_data.get("storage", "N/A")),
-            ("battery", "Battery", phone_data.get("battery", "N/A")),
+            ("processor", "Chipset", phone_data.get("chipset", "N/A")),
         ]
         
         for icon_key, label, value in specs:
             if value != "N/A" and value != "Check details":
                 # Draw emoji icon
                 icon = ICON_MAP.get(icon_key, "•")
-                draw.text((x, y), icon, fill=text_color, font=self.body_font)
+                draw.text((x, y), icon, fill=accent_color, font=self.body_font)
                 
                 # Draw spec text
                 spec_text = f"{label}: {value}"
-                draw.text((x + 30, y), spec_text, fill=text_color, font=self.body_font)
-                y += 40
+                draw.text((x + 35, y), spec_text, fill=text_color, font=self.body_font)
+                y += 45
+    
+    def draw_price(self, img: Image.Image, draw: ImageDraw.ImageDraw, price: str = ""):
+        """Draw price information"""
+        if not price:
+            return
+        
+        region = self.layout["regions"]["price"]
+        x, y = region["x"], region["y"]
+        
+        # Background for price
+        price_bg_color = self.hex_to_rgb(BRAND_GOLD) if self.platform in ["facebook", "instagram"] else self.hex_to_rgb(BRAND_MAROON)
+        draw.rounded_rectangle(
+            [x, y, x + region["width"], y + region["height"]],
+            radius=15,
+            fill=price_bg_color
+        )
+        
+        # Price text
+        price_text = f"💰 ONLY KES {price}"
+        text_color = BRAND_MAROON if self.platform in ["facebook", "instagram"] else BRAND_WHITE
+        
+        bbox = draw.textbbox((0, 0), price_text, font=self.price_font)
+        text_width = bbox[2] - bbox[0]
+        text_x = x + (region["width"] - text_width) // 2
+        text_y = y + (region["height"] - (bbox[3] - bbox[1])) // 2
+        
+        draw.text(
+            (text_x, text_y),
+            price_text,
+            fill=text_color,
+            font=self.price_font
+        )
     
     def draw_cta_button(self, img: Image.Image, draw: ImageDraw.ImageDraw, cta: str = ""):
         """Draw CTA button"""
@@ -691,11 +775,23 @@ class SimpleAdGenerator:
         # Button text
         button_text = cta if cta else ("SHOP NOW" if self.platform == "facebook" else "ORDER NOW")
         
-        # Draw button background
+        # Draw button background with gradient effect
+        for i in range(height):
+            # Create gradient from gold to darker gold
+            r = 255 - int(i * 0.3)
+            g = 215 - int(i * 0.3)
+            b = 0
+            draw.rectangle(
+                [x, y + i, x + width, y + i + 1],
+                fill=(r, g, b)
+            )
+        
+        # Add border
         draw.rounded_rectangle(
             [x, y, x + width, y + height],
             radius=10,
-            fill=self.hex_to_rgb(BRAND_GOLD)
+            outline=self.hex_to_rgb(BRAND_MAROON),
+            width=3
         )
         
         # Draw button text
@@ -714,44 +810,45 @@ class SimpleAdGenerator:
         )
     
     def draw_contact_info(self, img: Image.Image, draw: ImageDraw.ImageDraw):
-        """Draw contact information"""
+        """Draw contact information on the right side"""
         region = self.layout["regions"]["contact"]
         x, y = region["x"], region["y"]
         
-        # Text color
-        text_color = BRAND_WHITE if self.platform in ["facebook", "instagram"] else BRAND_BLACK
-        
-        # Contact heading
-        draw.text(
-            (x, y),
-            "Contact Tripple K:",
-            fill=text_color,
-            font=self.body_font
+        # Background for contact info
+        contact_bg_color = self.hex_to_rgb(LIGHT_BG) if self.platform == "whatsapp" else (255, 255, 255, 180)
+        draw.rounded_rectangle(
+            [x, y, x + region["width"], y + region["height"]],
+            radius=10,
+            fill=contact_bg_color
         )
         
-        # Phone and WhatsApp
-        contact_text = f"📞 {TRIPPLEK_PHONE}   💬 {TRIPPLEK_PHONE}"
+        # Text color
+        text_color = BRAND_MAROON
+        
+        # Contact icon and text
+        contact_text = "📞 Call/WhatsApp"
         draw.text(
-            (x, y + 30),
+            (x + 10, y + 10),
             contact_text,
             fill=text_color,
-            font=self.body_font
+            font=self.small_font
         )
         
-        # Website
+        # Phone number
+        phone_text = TRIPPLEK_PHONE
         draw.text(
-            (x, y + 60),
-            f"🌐 {TRIPPLEK_URL}",
+            (x + 10, y + 30),
+            phone_text,
             fill=text_color,
-            font=self.body_font
+            font=ImageFont.truetype("poppins.ttf", 12) if hasattr(self, 'small_font') else self.small_font
         )
     
     def generate(self, phone_data: dict, phone_img_url: str = None, 
-                hook: str = "", cta: str = "") -> Image.Image:
-        """Generate complete ad"""
+                hook: str = "", cta: str = "", price: str = "") -> Image.Image:
+        """Generate complete ad with all elements"""
         # Create base image
         img = self.create_base_image()
-        draw = ImageDraw.Draw(img)
+        draw = ImageDraw.Draw(img, 'RGBA')
         
         # Draw all components
         img = self.draw_logo(img)
@@ -760,7 +857,8 @@ class SimpleAdGenerator:
         if phone_img_url:
             img = self.draw_phone_image(img, phone_img_url)
         
-        self.draw_content(img, draw, phone_data, hook, cta)
+        self.draw_content(img, draw, phone_data, hook, price)
+        self.draw_price(img, draw, price)
         self.draw_cta_button(img, draw, cta)
         self.draw_contact_info(img, draw)
         
@@ -786,7 +884,7 @@ class RateLimiter:
 rate_limiter = RateLimiter()
 
 def generate_marketing_content(phone_data: dict) -> Optional[Dict[str, str]]:
-    """Generate marketing content"""
+    """Generate marketing content with price suggestion"""
     if not client:
         return None
 
@@ -802,12 +900,14 @@ Specs:
 - Camera: {phone_data.get('camera', 'N/A')}
 - RAM: {phone_data.get('ram', 'N/A')}
 - Storage: {phone_data.get('storage', 'N/A')}
+- Chipset: {phone_data.get('chipset', 'N/A')}
 
 Business: Tripple K Communications
 Phone: {TRIPPLEK_PHONE}
 
 Generate:
 Hook: [Catchy headline, 5-7 words]
+Price: [Suggested retail price in Kenyan Shillings, e.g., "45,999"]
 CTA: [Call to action, 2-3 words]
 Description: [Short description, 1-2 sentences]
 Hashtags: [5 relevant hashtags]"""
@@ -818,13 +918,13 @@ Hashtags: [5 relevant hashtags]"""
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=300
+            max_tokens=350
         )
 
         text = response.choices[0].message.content.strip()
         
-        # Simple parsing
-        content = {"hook": "", "cta": "", "description": "", "hashtags": ""}
+        # Parse content
+        content = {"hook": "", "price": "", "cta": "", "description": "", "hashtags": ""}
         lines = text.split('\n')
         
         for line in lines:
@@ -832,6 +932,11 @@ Hashtags: [5 relevant hashtags]"""
             for key in content.keys():
                 if line.lower().startswith(f"{key}:"):
                     content[key] = line.split(':', 1)[1].strip()
+                    # Extract just the number from price
+                    if key == "price":
+                        price_match = re.search(r'[\d,]+', content[key])
+                        if price_match:
+                            content[key] = price_match.group(0).replace(',', '')
                     break
         
         return content
@@ -841,7 +946,7 @@ Hashtags: [5 relevant hashtags]"""
         return None
 
 # ==========================================
-# MAIN APPLICATION - COMPLETELY REVISED
+# MAIN APPLICATION
 # ==========================================
 
 def main():
@@ -866,11 +971,13 @@ def main():
         st.session_state.search_results = []
     if "selected_phone_index" not in st.session_state:
         st.session_state.selected_phone_index = -1
+    if "phone_price" not in st.session_state:
+        st.session_state.phone_price = ""
 
     # Tabs
     tabs = st.tabs(["🔍 Find Phone", "📝 Create Content", "🎨 Generate Ads"])
 
-    # TAB 1: FIND PHONE - COMPLETELY REVISED
+    # TAB 1: FIND PHONE
     with tabs[0]:
         st.subheader("Search Phone Database")
         
@@ -889,7 +996,7 @@ def main():
                     if results:
                         st.success(f"✅ Found {len(results)} phones")
                         st.session_state.search_results = results
-                        st.session_state.selected_phone_index = -1  # Reset selection
+                        st.session_state.selected_phone_index = -1
                         st.rerun()
                     else:
                         st.error("❌ No phones found. Try a different search term.")
@@ -902,7 +1009,6 @@ def main():
         if st.session_state.search_results:
             st.markdown("### 📱 Select a Phone")
             
-            # Create a grid for results
             results = st.session_state.search_results
             num_cols = min(2, len(results))
             cols = st.columns(num_cols)
@@ -913,7 +1019,7 @@ def main():
                     phone_image = phone.get("image", "")
                     phone_id = phone.get("id", "")
                     
-                    # Create phone card with better styling
+                    # Create phone card
                     is_selected = idx == st.session_state.selected_phone_index
                     card_class = "phone-card-selected" if is_selected else ""
                     
@@ -923,7 +1029,7 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # Display phone image thumbnail if available
+                    # Display phone image thumbnail
                     if phone_image:
                         try:
                             thumb_img = download_image_safe(phone_image)
@@ -936,7 +1042,6 @@ def main():
                     # Selection button
                     if st.button(f"Select {phone_name}", key=f"select_{idx}", use_container_width=True):
                         with st.spinner("Loading phone details..."):
-                            # Store the selected phone index
                             st.session_state.selected_phone_index = idx
                             
                             # Get detailed phone info
@@ -947,17 +1052,18 @@ def main():
                                 phone_data = parse_phone_specs_from_detailed_info(detailed_info, phone)
                                 st.session_state.current_phone = phone_data
                                 
-                                # Get images using the correct image ID format
+                                # Get images
                                 image_id = extract_image_id_from_search_result(phone)
                                 images = get_phone_images(image_id)
                                 
-                                # Also include the main image from search result
+                                # Include the main image from search result
                                 if phone_image and phone_image not in images:
                                     images.insert(0, phone_image)
                                 
                                 st.session_state.phone_images = images
                                 st.session_state.selected_image_index = 0
-                                st.session_state.marketing_content = None  # Reset marketing content
+                                st.session_state.marketing_content = None
+                                st.session_state.phone_price = ""
                                 
                                 st.success(f"✅ {phone_name} loaded successfully!")
                                 st.rerun()
@@ -978,45 +1084,45 @@ def main():
                 st.markdown("### 📸 Phone Images")
                 
                 if images:
-                    # Show thumbnail selection
-                    st.markdown("**Select an image:**")
+                    # Show image selection
+                    st.markdown("**Select an image (first image is default for ads):**")
                     
-                    # Create a grid for thumbnails
-                    num_thumb_cols = min(4, len(images))
-                    thumb_cols = st.columns(num_thumb_cols)
+                    # Display images in a grid
+                    for i in range(0, min(8, len(images)), 4):
+                        cols = st.columns(4)
+                        for j in range(4):
+                            idx = i + j
+                            if idx < len(images):
+                                with cols[j]:
+                                    try:
+                                        thumb = download_image_safe(images[idx])
+                                        if thumb:
+                                            thumb.thumbnail((100, 100))
+                                            st.image(thumb, use_container_width=True)
+                                            
+                                            # Show selection indicator
+                                            if idx == st.session_state.selected_image_index:
+                                                st.success("✓ Selected")
+                                            else:
+                                                if st.button(f"Select", key=f"img_select_{idx}", use_container_width=True):
+                                                    st.session_state.selected_image_index = idx
+                                                    st.rerun()
+                                    except:
+                                        st.button(f"Image {idx+1}", key=f"img_btn_{idx}", disabled=True, use_container_width=True)
                     
-                    for idx, img_url in enumerate(images[:num_thumb_cols*2]):  # Show up to 8 images
-                        col_idx = idx % num_thumb_cols
-                        with thumb_cols[col_idx]:
-                            # Display thumbnail
-                            try:
-                                thumb = download_image_safe(img_url)
-                                if thumb:
-                                    thumb.thumbnail((100, 100))
-                                    if st.image(thumb, use_container_width=True):
-                                        pass
-                                    
-                                    if st.button(f"Select", key=f"select_img_{idx}", use_container_width=True):
-                                        st.session_state.selected_image_index = idx
-                                        st.rerun()
-                            except:
-                                st.button(f"Image {idx+1}", key=f"img_btn_{idx}", disabled=True, use_container_width=True)
-                    
-                    # Show selected image
+                    # Show selected image preview
                     selected_idx = st.session_state.selected_image_index
                     if selected_idx < len(images):
                         try:
                             phone_img = download_image_safe(images[selected_idx])
                             if phone_img:
-                                st.markdown(f"**Selected Image {selected_idx+1}:**")
+                                st.markdown(f"**Preview (Image {selected_idx+1}):**")
                                 st.image(phone_img, use_container_width=True)
-                            else:
-                                st.warning("⚠️ Could not load selected image")
                         except Exception as e:
                             st.error(f"Error loading image: {e}")
                 else:
                     st.info("📷 No images available for this phone.")
-                    # Try to use the main image from search result
+                    
                     if phone_data.get("image_url"):
                         try:
                             phone_img = download_image_safe(phone_data["image_url"])
@@ -1024,28 +1130,18 @@ def main():
                                 st.image(phone_img, use_container_width=True, caption="Main Phone Image")
                         except:
                             pass
-                    
-                    # Refresh images button
-                    if st.button("🔄 Try Loading Images Again", use_container_width=True):
-                        if phone_data.get("id"):
-                            image_id = extract_image_id_from_search_result({"id": phone_data["id"]})
-                            images = get_phone_images(image_id)
-                            st.session_state.phone_images = images
-                            st.rerun()
             
             with col_specs:
-                st.markdown("### 📋 Specifications")
+                st.markdown("### 📋 Key Specifications")
                 st.markdown('<div class="specs-container">', unsafe_allow_html=True)
                 
-                # Display specs
+                # Display 5 key specs
                 display_specs = [
                     ("🖥️ Screen", phone_data.get('screen', 'N/A')),
                     ("📸 Camera", phone_data.get('camera', 'N/A')),
                     ("⚡ RAM", phone_data.get('ram', 'N/A')),
                     ("💾 Storage", phone_data.get('storage', 'N/A')),
-                    ("🔋 Battery", phone_data.get('battery', 'N/A')),
-                    ("🚀 Processor", phone_data.get('chipset', 'N/A')),
-                    ("🪟 OS", phone_data.get('os', 'N/A')),
+                    ("🚀 Chipset", phone_data.get('chipset', 'N/A')),
                 ]
                 
                 for label, value in display_specs:
@@ -1059,18 +1155,15 @@ def main():
                 
                 st.markdown('</div>', unsafe_allow_html=True)
                 
-                # Show more details if available
-                if phone_data.get('detailed_data'):
-                    if st.button("📊 Show More Details", use_container_width=True):
-                        detailed = phone_data['detailed_data']
-                        with st.expander("Full Phone Details"):
-                            for key, value in detailed.items():
-                                if isinstance(value, dict):
-                                    st.write(f"**{key}:**")
-                                    for k, v in value.items():
-                                        st.write(f"  - {k}: {v}")
-                                else:
-                                    st.write(f"**{key}:** {value}")
+                # Price input for this phone
+                st.markdown("### 💰 Set Price for Ads")
+                price = st.text_input("Enter price (KES):", 
+                                    value=st.session_state.phone_price,
+                                    placeholder="e.g., 45999")
+                
+                if price:
+                    st.session_state.phone_price = price
+                    st.success(f"✅ Price set: KES {price:,}")
 
     # TAB 2: CREATE CONTENT
     with tabs[1]:
@@ -1083,51 +1176,56 @@ def main():
             
             st.markdown(f"**Selected Phone:** {phone_data['name']}")
             
+            # Price section
+            st.markdown("### 💰 Pricing")
+            price_col1, price_col2 = st.columns([2, 1])
+            with price_col1:
+                price = st.text_input("Phone Price (KES):", 
+                                    value=st.session_state.phone_price,
+                                    placeholder="Enter price in Kenyan Shillings",
+                                    key="content_price")
+            with price_col2:
+                if price:
+                    st.session_state.phone_price = price
+                    st.success(f"KES {price:,}")
+            
             # Generate content button
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                if st.button("🚀 Generate AI Content", type="primary", disabled=not client, use_container_width=True):
-                    with st.spinner("Creating marketing content..."):
-                        content = generate_marketing_content(phone_data)
-                        
-                        if content:
-                            st.session_state.marketing_content = content
-                            st.balloons()
-                            st.success("✅ Content generated successfully!")
-                            st.rerun()
-                        else:
-                            st.error("❌ Failed to generate content. Please try again.")
+            if st.button("🚀 Generate AI Content", type="primary", disabled=not client, use_container_width=True):
+                with st.spinner("Creating marketing content..."):
+                    content = generate_marketing_content(phone_data)
+                    
+                    if content:
+                        st.session_state.marketing_content = content
+                        # Update price if AI suggests one
+                        if content.get('price') and not st.session_state.phone_price:
+                            st.session_state.phone_price = content['price']
+                        st.balloons()
+                        st.success("✅ Content generated successfully!")
+                        st.rerun()
             
             # Edit content
             if st.session_state.marketing_content:
-                st.markdown("### 📝 Edit Content")
-                
                 content = st.session_state.marketing_content
                 
-                # Editable fields
+                st.markdown("### 📝 Edit Content")
+                
                 hook = st.text_input("Hook (Headline):", 
-                                   value=content.get('hook', f"{phone_data['name']} - Now Available!"),
-                                   placeholder="Catchy headline for your ad")
+                                   value=content.get('hook', f"{phone_data['name']} - Now Available!"))
                 cta = st.text_input("Call to Action:", 
-                                  value=content.get('cta', 'SHOP NOW'),
-                                  placeholder="e.g., SHOP NOW, ORDER TODAY")
+                                  value=content.get('cta', 'SHOP NOW'))
                 description = st.text_area("Description:", 
                                          value=content.get('description', f"Get the amazing {phone_data['name']} at Tripple K Communications!"),
-                                         height=100,
-                                         placeholder="Product description")
+                                         height=100)
                 hashtags = st.text_input("Hashtags:", 
-                                       value=content.get('hashtags', '#TrippleK #Smartphones #Deals'),
-                                       placeholder="#Hashtags separated by spaces")
+                                       value=content.get('hashtags', '#TrippleK #Smartphones #Deals'))
                 
                 # Update content
-                updated_content = {
+                st.session_state.marketing_content = {
                     "hook": hook,
                     "cta": cta,
                     "description": description,
                     "hashtags": hashtags
                 }
-                
-                st.session_state.marketing_content = updated_content
                 
                 # Preview
                 st.markdown("### 👁️ Content Preview")
@@ -1135,37 +1233,35 @@ def main():
                 with col1:
                     st.markdown(f"""
                     **Hook:**  
-                    {updated_content['hook']}
+                    {hook}
                     
                     **Call to Action:**  
-                    {updated_content['cta']}
+                    {cta}
+                    
+                    **Price:**  
+                    KES {st.session_state.phone_price if st.session_state.phone_price else "Not set"}
                     """)
                 with col2:
                     st.markdown(f"""
                     **Description:**  
-                    {updated_content['description']}
+                    {description}
                     
                     **Hashtags:**  
-                    {updated_content['hashtags']}
+                    {hashtags}
                     """)
             else:
                 st.info("Click 'Generate AI Content' to create marketing content or manually enter content below.")
                 
                 # Manual content input
-                st.markdown("### 📝 Manual Content Creation")
                 hook = st.text_input("Hook (Headline):", 
-                                   value=f"{phone_data['name']} - Now Available!",
-                                   placeholder="Catchy headline for your ad")
+                                   value=f"{phone_data['name']} - Now Available!")
                 cta = st.text_input("Call to Action:", 
-                                  value="SHOP NOW",
-                                  placeholder="e.g., SHOP NOW, ORDER TODAY")
+                                  value="SHOP NOW")
                 description = st.text_area("Description:", 
                                          value=f"Get the amazing {phone_data['name']} at Tripple K Communications!",
-                                         height=100,
-                                         placeholder="Product description")
+                                         height=100)
                 hashtags = st.text_input("Hashtags:", 
-                                       value="#TrippleK #Smartphones #Deals",
-                                       placeholder="#Hashtags separated by spaces")
+                                       value="#TrippleK #Smartphones #Deals")
                 
                 if st.button("💾 Save Content", use_container_width=True):
                     st.session_state.marketing_content = {
@@ -1186,19 +1282,18 @@ def main():
         else:
             phone_data = st.session_state.current_phone
             
-            # Get selected image
+            # Get selected image (use first image as default if available)
             selected_image_url = None
             if st.session_state.phone_images:
-                selected_idx = st.session_state.selected_image_index
-                if selected_idx < len(st.session_state.phone_images):
-                    selected_image_url = st.session_state.phone_images[selected_idx]
-            elif phone_data.get("image_url"):
+                # Always use the first image as default for ads
+                selected_image_url = st.session_state.phone_images[0]
+                st.info(f"📸 Using first image for ad (Image 1)")
+            
+            if not selected_image_url and phone_data.get("image_url"):
                 selected_image_url = phone_data["image_url"]
             
-            if selected_image_url:
-                st.success(f"✅ Using selected image")
-            else:
-                st.warning("⚠️ No image available for this phone.")
+            if not selected_image_url:
+                st.warning("⚠️ No image available for this phone. The ad will be generated without a phone image.")
             
             # Platform selection
             st.markdown("### 🎯 Select Platform")
@@ -1214,10 +1309,16 @@ def main():
             col1, col2 = st.columns(2)
             with col1:
                 hook = st.text_input("Ad Headline:", 
-                                   value=content.get('hook', f"{phone_data['name']} - Now Available!"))
+                                   value=content.get('hook', f"{phone_data['name']} - Now Available!"),
+                                   key="ad_hook")
             with col2:
                 cta = st.text_input("Call to Action:", 
-                                  value=content.get('cta', 'SHOP NOW'))
+                                  value=content.get('cta', 'SHOP NOW'),
+                                  key="ad_cta")
+            
+            # Price display
+            price_display = st.session_state.phone_price if st.session_state.phone_price else "45,999"
+            st.markdown(f"### 💰 Price: KES {price_display}")
             
             # Generate ad button
             if st.button("✨ Generate Ad", type="primary", use_container_width=True):
@@ -1227,12 +1328,13 @@ def main():
                         platform_key = platform.lower()
                         generator = SimpleAdGenerator(platform_key)
                         
-                        # Generate ad
+                        # Generate ad with price
                         ad_image = generator.generate(
                             phone_data=phone_data,
                             phone_img_url=selected_image_url,
                             hook=hook,
-                            cta=cta
+                            cta=cta,
+                            price=st.session_state.phone_price
                         )
                         
                         # Display ad
@@ -1245,7 +1347,7 @@ def main():
                         
                         # Create safe filename
                         safe_name = re.sub(r'[^\w\s-]', '', phone_data['name']).strip().replace(' ', '_')
-                        filename = f"tripplek_{safe_name}_{platform_key}.png"
+                        filename = f"tripplek_{safe_name}_{platform_key}_ad.png"
                         
                         st.download_button(
                             label="📥 Download PNG",
@@ -1259,6 +1361,8 @@ def main():
                         
                     except Exception as e:
                         st.error(f"❌ Error creating ad: {str(e)}")
+                        import traceback
+                        st.error(traceback.format_exc())
 
     # Footer
     st.markdown("---")
@@ -1266,7 +1370,7 @@ def main():
     <div style="text-align: center; color: {BRAND_MAROON}; padding: 1rem;">
         <h4>Tripple K Communications</h4>
         <p>📞 {TRIPPLEK_PHONE} | 💬 {TRIPPLEK_PHONE} | 🌐 {TRIPPLEK_URL}</p>
-        <p style="font-size: 0.9em; color: #666;">Marketing Suite v3.0 | Powered by GSM Arena API</p>
+        <p style="font-size: 0.9em; color: #666;">Marketing Suite v4.0 | Powered by GSM Arena API</p>
     </div>
     """, unsafe_allow_html=True)
 
