@@ -190,24 +190,6 @@ st.markdown(f"""
         border-color: {BRAND_MAROON} !important;
         background-color: #f8f0f0;
     }}
-    
-    .price-input {{
-        background: linear-gradient(135deg, {BRAND_GOLD}20 0%, {BRAND_ACCENT}20 100%);
-        border: 2px solid {BRAND_GOLD} !important;
-        border-radius: 10px !important;
-        padding: 12px !important;
-        font-weight: bold !important;
-        color: {BRAND_MAROON} !important;
-    }}
-    
-    .stNumberInput > div > div > input {{
-        background: linear-gradient(135deg, {BRAND_GOLD}20 0%, {BRAND_ACCENT}20 100%);
-        border: 2px solid {BRAND_GOLD} !important;
-        border-radius: 10px !important;
-        padding: 12px !important;
-        font-weight: bold !important;
-        color: {BRAND_MAROON} !important;
-    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -412,6 +394,35 @@ def create_transparent_phone_image(image_url: str, size: Tuple[int, int]) -> Opt
         print(f"Error creating transparent phone image: {e}")
     
     return None
+
+def format_price(price_str: str) -> str:
+    """Format price string with commas"""
+    if not price_str:
+        return ""
+    
+    # Remove any non-digit characters except commas
+    clean_price = re.sub(r'[^\d,]', '', price_str)
+    
+    # If it's already formatted with commas, return as is
+    if ',' in clean_price:
+        return clean_price
+    
+    # Format number with commas
+    try:
+        # Remove any existing commas and convert to int
+        num_str = clean_price.replace(',', '')
+        if num_str:
+            num = int(num_str)
+            return f"{num:,}"
+    except:
+        pass
+    
+    return clean_price
+
+def format_price_for_display(price_str: str) -> str:
+    """Format price for display (just the number with commas)"""
+    formatted = format_price(price_str)
+    return formatted if formatted else "99,999"
 
 # ==========================================
 # SPEC PARSING - IMPROVED
@@ -691,7 +702,7 @@ class SimpleAdGenerator:
         return img
     
     def draw_content(self, img: Image.Image, draw: ImageDraw.ImageDraw, 
-                    phone_data: dict, hook: str = "", price: str = ""):
+                    phone_data: dict, hook: str = ""):
         """Draw content in designated region"""
         region = self.layout["regions"]["content"]
         x, y = region["x"], region["y"]
@@ -735,12 +746,15 @@ class SimpleAdGenerator:
                 y += 45
     
     def draw_price(self, img: Image.Image, draw: ImageDraw.ImageDraw, price: str = ""):
-        """Draw price information"""
-        if not price:
-            return
-        
+        """Draw price information - JUST THE NUMBER WITH COMMAS"""
         region = self.layout["regions"]["price"]
         x, y = region["x"], region["y"]
+        
+        # Format price (just the number with commas)
+        if price:
+            formatted_price = format_price_for_display(price)
+        else:
+            formatted_price = "99,999"  # Default price
         
         # Background for price
         price_bg_color = self.hex_to_rgb(BRAND_GOLD) if self.platform in ["facebook", "instagram"] else self.hex_to_rgb(BRAND_MAROON)
@@ -750,8 +764,8 @@ class SimpleAdGenerator:
             fill=price_bg_color
         )
         
-        # Price text
-        price_text = f"💰 ONLY KES {price}"
+        # Price text - JUST THE NUMBER WITH COMMAS
+        price_text = formatted_price
         text_color = BRAND_MAROON if self.platform in ["facebook", "instagram"] else BRAND_WHITE
         
         bbox = draw.textbbox((0, 0), price_text, font=self.price_font)
@@ -857,7 +871,7 @@ class SimpleAdGenerator:
         if phone_img_url:
             img = self.draw_phone_image(img, phone_img_url)
         
-        self.draw_content(img, draw, phone_data, hook, price)
+        self.draw_content(img, draw, phone_data, hook)
         self.draw_price(img, draw, price)
         self.draw_cta_button(img, draw, cta)
         self.draw_contact_info(img, draw)
@@ -932,11 +946,6 @@ Hashtags: [5 relevant hashtags]"""
             for key in content.keys():
                 if line.lower().startswith(f"{key}:"):
                     content[key] = line.split(':', 1)[1].strip()
-                    # Extract just the number from price
-                    if key == "price":
-                        price_match = re.search(r'[\d,]+', content[key])
-                        if price_match:
-                            content[key] = price_match.group(0).replace(',', '')
                     break
         
         return content
@@ -972,7 +981,7 @@ def main():
     if "selected_phone_index" not in st.session_state:
         st.session_state.selected_phone_index = -1
     if "phone_price" not in st.session_state:
-        st.session_state.phone_price = ""
+        st.session_state.phone_price = "99,999"  # Default price
 
     # Tabs
     tabs = st.tabs(["🔍 Find Phone", "📝 Create Content", "🎨 Generate Ads"])
@@ -1063,7 +1072,6 @@ def main():
                                 st.session_state.phone_images = images
                                 st.session_state.selected_image_index = 0
                                 st.session_state.marketing_content = None
-                                st.session_state.phone_price = ""
                                 
                                 st.success(f"✅ {phone_name} loaded successfully!")
                                 st.rerun()
@@ -1157,13 +1165,16 @@ def main():
                 
                 # Price input for this phone
                 st.markdown("### 💰 Set Price for Ads")
-                price = st.text_input("Enter price (KES):", 
+                price = st.text_input("Enter price (e.g., 45,999):", 
                                     value=st.session_state.phone_price,
-                                    placeholder="e.g., 45999")
+                                    placeholder="e.g., 45,999 or 45999",
+                                    key="tab1_price")
                 
                 if price:
+                    # Store the price (allow commas)
                     st.session_state.phone_price = price
-                    st.success(f"✅ Price set: KES {price:,}")
+                    formatted_price = format_price_for_display(price)
+                    st.success(f"✅ Price set: {formatted_price}")
 
     # TAB 2: CREATE CONTENT
     with tabs[1]:
@@ -1180,14 +1191,15 @@ def main():
             st.markdown("### 💰 Pricing")
             price_col1, price_col2 = st.columns([2, 1])
             with price_col1:
-                price = st.text_input("Phone Price (KES):", 
+                price = st.text_input("Phone Price (e.g., 45,999):", 
                                     value=st.session_state.phone_price,
-                                    placeholder="Enter price in Kenyan Shillings",
+                                    placeholder="Enter price e.g., 45,999 or 45999",
                                     key="content_price")
             with price_col2:
                 if price:
                     st.session_state.phone_price = price
-                    st.success(f"KES {price:,}")
+                    formatted_price = format_price_for_display(price)
+                    st.success(f"{formatted_price}")
             
             # Generate content button
             if st.button("🚀 Generate AI Content", type="primary", disabled=not client, use_container_width=True):
@@ -1197,7 +1209,7 @@ def main():
                     if content:
                         st.session_state.marketing_content = content
                         # Update price if AI suggests one
-                        if content.get('price') and not st.session_state.phone_price:
+                        if content.get('price'):
                             st.session_state.phone_price = content['price']
                         st.balloons()
                         st.success("✅ Content generated successfully!")
@@ -1210,14 +1222,18 @@ def main():
                 st.markdown("### 📝 Edit Content")
                 
                 hook = st.text_input("Hook (Headline):", 
-                                   value=content.get('hook', f"{phone_data['name']} - Now Available!"))
+                                   value=content.get('hook', f"{phone_data['name']} - Now Available!"),
+                                   key="content_hook")
                 cta = st.text_input("Call to Action:", 
-                                  value=content.get('cta', 'SHOP NOW'))
+                                  value=content.get('cta', 'SHOP NOW'),
+                                  key="content_cta")
                 description = st.text_area("Description:", 
                                          value=content.get('description', f"Get the amazing {phone_data['name']} at Tripple K Communications!"),
-                                         height=100)
+                                         height=100,
+                                         key="content_desc")
                 hashtags = st.text_input("Hashtags:", 
-                                       value=content.get('hashtags', '#TrippleK #Smartphones #Deals'))
+                                       value=content.get('hashtags', '#TrippleK #Smartphones #Deals'),
+                                       key="content_tags")
                 
                 # Update content
                 st.session_state.marketing_content = {
@@ -1237,9 +1253,6 @@ def main():
                     
                     **Call to Action:**  
                     {cta}
-                    
-                    **Price:**  
-                    KES {st.session_state.phone_price if st.session_state.phone_price else "Not set"}
                     """)
                 with col2:
                     st.markdown(f"""
@@ -1254,14 +1267,18 @@ def main():
                 
                 # Manual content input
                 hook = st.text_input("Hook (Headline):", 
-                                   value=f"{phone_data['name']} - Now Available!")
+                                   value=f"{phone_data['name']} - Now Available!",
+                                   key="manual_hook")
                 cta = st.text_input("Call to Action:", 
-                                  value="SHOP NOW")
+                                  value="SHOP NOW",
+                                  key="manual_cta")
                 description = st.text_area("Description:", 
                                          value=f"Get the amazing {phone_data['name']} at Tripple K Communications!",
-                                         height=100)
+                                         height=100,
+                                         key="manual_desc")
                 hashtags = st.text_input("Hashtags:", 
-                                       value="#TrippleK #Smartphones #Deals")
+                                       value="#TrippleK #Smartphones #Deals",
+                                       key="manual_tags")
                 
                 if st.button("💾 Save Content", use_container_width=True):
                     st.session_state.marketing_content = {
@@ -1317,8 +1334,8 @@ def main():
                                   key="ad_cta")
             
             # Price display
-            price_display = st.session_state.phone_price if st.session_state.phone_price else "45,999"
-            st.markdown(f"### 💰 Price: KES {price_display}")
+            price_display = format_price_for_display(st.session_state.phone_price)
+            st.markdown(f"### 💰 Price: {price_display}")
             
             # Generate ad button
             if st.button("✨ Generate Ad", type="primary", use_container_width=True):
