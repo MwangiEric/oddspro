@@ -65,14 +65,14 @@ INFO_ENDPOINT = f"{API_BASE}/gsm/info"
 
 # Badge options
 BADGE_OPTIONS = {
-    "new_arrival": {"text": "NEW ARRIVAL", "color": "#FF6B35", "icon": "🆕"},
-    "best_seller": {"text": "BEST SELLER", "color": "#4CAF50", "icon": "🏆"},
-    "limited_stock": {"text": "LIMITED STOCK", "color": "#FFC107", "icon": "⚡"},
-    "official_warranty": {"text": "OFFICIAL WARRANTY", "color": "#2196F3", "icon": "✅"},
-    "trending": {"text": "TRENDING NOW", "color": "#9C27B0", "icon": "🔥"},
-    "free_delivery": {"text": "FREE DELIVERY", "color": "#00BCD4", "icon": "🚚"},
-    "discount": {"text": "SPECIAL OFFER", "color": "#FF5722", "icon": "💰"},
-    "premium": {"text": "PREMIUM QUALITY", "color": "#795548", "icon": "💎"},
+    "new_arrival": {"text": "NEW ARRIVAL", "color": "#FF6B35", "icon": "ðŸ†•"},
+    "best_seller": {"text": "BEST SELLER", "color": "#4CAF50", "icon": "ðŸ†"},
+    "limited_stock": {"text": "LIMITED STOCK", "color": "#FFC107", "icon": "âš¡"},
+    "official_warranty": {"text": "OFFICIAL WARRANTY", "color": "#2196F3", "icon": "âœ…"},
+    "trending": {"text": "TRENDING NOW", "color": "#9C27B0", "icon": "ðŸ”¥"},
+    "free_delivery": {"text": "FREE DELIVERY", "color": "#00BCD4", "icon": "ðŸšš"},
+    "discount": {"text": "SPECIAL OFFER", "color": "#FF5722", "icon": "ðŸ’°"},
+    "premium": {"text": "PREMIUM QUALITY", "color": "#795548", "icon": "ðŸ’Ž"},
 }
 
 # Rate limiting
@@ -90,7 +90,7 @@ GLOBAL_ASSETS = {
 st.set_page_config(
     page_title="Tripple K Phone Marketing Suite",
     layout="wide",
-    page_icon="📱"
+    page_icon="ðŸ“±"
 )
 
 # ==========================================
@@ -1021,12 +1021,12 @@ class AdvancedAdGenerator:
 
         # Draw 6 specific specs: screen, camera, processor, ram, storage, battery
         all_specs = [
-            ("🖥️", "Screen", phone_data["specs"].get("screen", "N/A")),
-            ("📸", "Camera", phone_data["specs"].get("camera", "N/A")),
-            ("🚀", "Processor", phone_data["specs"].get("chipset", "N/A")),
-            ("⚡", "RAM", phone_data["specs"].get("ram", "N/A")),
-            ("💾", "Storage", phone_data["specs"].get("storage", "N/A")),
-            ("🔋", "Battery", phone_data["specs"].get("battery", "N/A")),
+            ("ðŸ–¥ï¸", "Screen", phone_data["specs"].get("screen", "N/A")),
+            ("ðŸ“¸", "Camera", phone_data["specs"].get("camera", "N/A")),
+            ("ðŸš€", "Processor", phone_data["specs"].get("chipset", "N/A")),
+            ("âš¡", "RAM", phone_data["specs"].get("ram", "N/A")),
+            ("ðŸ’¾", "Storage", phone_data["specs"].get("storage", "N/A")),
+            ("ðŸ”‹", "Battery", phone_data["specs"].get("battery", "N/A")),
         ]
 
         specs_displayed = 0
@@ -1226,12 +1226,12 @@ class AdvancedAdGenerator:
         text_color = BRAND_WHITE if self.platform in ["facebook", "instagram"] else BRAND_BLACK
 
         # Website
-        website_text = f"🌐 {TRIPPLEK_URL}"
+        website_text = f"ðŸŒ {TRIPPLEK_URL}"
         draw.text((x, y), website_text, fill=text_color, font=self.small_font)
 
         # Location
         location_y = y + 25
-        location_text = f"📍 {TRIPPLEK_LOCATION}"
+        location_text = f"ðŸ“ {TRIPPLEK_LOCATION}"
         draw.text((x, location_y), location_text, fill=text_color, font=self.small_font)
 
         # Platform-specific name and icon
@@ -1245,7 +1245,7 @@ class AdvancedAdGenerator:
                 # Add platform name after icon
                 platform_name_text = f"  {PLATFORM_INFO['facebook']['name']}"
             else:
-                platform_name_text = f"👤 {PLATFORM_INFO['facebook']['name']}"
+                platform_name_text = f"ðŸ‘¤ {PLATFORM_INFO['facebook']['name']}"
             draw.text((x + 20 if facebook_icon else x, platform_name_y), platform_name_text, fill=text_color, font=self.small_font)
         elif self.platform == "instagram":
             # Add TikTok icon for Instagram as placeholder
@@ -1256,7 +1256,7 @@ class AdvancedAdGenerator:
                 # Add platform name after icon
                 platform_name_text = f"  {PLATFORM_INFO['tiktok']['name']}"
             else:
-                platform_name_text = f"🎵 {PLATFORM_INFO['tiktok']['name']}"
+                platform_name_text = f"ðŸŽµ {PLATFORM_INFO['tiktok']['name']}"
             draw.text((x + 20 if tiktok_icon else x, platform_name_y), platform_name_text, fill=text_color, font=self.small_font)
         elif self.platform == "whatsapp":
             # Add TikTok icon for WhatsApp as placeholder
@@ -1267,7 +1267,7 @@ class AdvancedAdGenerator:
                 # Add platform name after icon
                 platform_name_text = f"  {PLATFORM_INFO['tiktok']['name']}"
             else:
-                platform_name_text = f"💬 Tripple K"
+                platform_name_text = f"ðŸ’¬ Tripple K"
             draw.text((x + 20 if tiktok_icon else x, platform_name_y), platform_name_text, fill=text_color, font=self.small_font)
 
         # Hashtags with wrapping
@@ -1319,17 +1319,17 @@ def generate_social_posts(phone_data: dict, content: dict, price: str, badges: L
     specs = phone_data["specs"]
     specs_text = ""
     if specs.get("screen", "N/A") != "N/A":
-        specs_text += f"• Screen: {specs['screen']}\n"
+        specs_text += f"â€¢ Screen: {specs['screen']}\n"
     if specs.get("camera", "N/A") != "N/A":
-        specs_text += f"• Camera: {specs['camera']}\n"
+        specs_text += f"â€¢ Camera: {specs['camera']}\n"
     if specs.get("ram", "N/A") != "N/A":
-        specs_text += f"• RAM: {specs['ram']}\n"
+        specs_text += f"â€¢ RAM: {specs['ram']}\n"
     if specs.get("storage", "N/A") != "N/A":
-        specs_text += f"• Storage: {specs['storage']}\n"
+        specs_text += f"â€¢ Storage: {specs['storage']}\n"
     if specs.get("chipset", "N/A") != "N/A":
-        specs_text += f"• Chipset: {specs['chipset']}\n"
+        specs_text += f"â€¢ Chipset: {specs['chipset']}\n"
     if specs.get("battery", "N/A") != "N/A":
-        specs_text += f"• Battery: {specs['battery']}\n"
+        specs_text += f"â€¢ Battery: {specs['battery']}\n"
 
     # Format badges text
     badges_text = ""
@@ -1346,21 +1346,21 @@ def generate_social_posts(phone_data: dict, content: dict, price: str, badges: L
     cta = content.get('cta', 'SHOP NOW')
 
     # Use platform-specific content if available, otherwise use default format
-    whatsapp_post = content.get('whatsapp', f"""📱 *{phone_data['name']}*
+    whatsapp_post = content.get('whatsapp', f"""ðŸ“± *{phone_data['name']}*
 
 {content.get('hook', 'Available Now at Tripple K!')}
 
 {specs_text}
-💰 *Price: KES {formatted_price}*
+ðŸ’° *Price: KES {formatted_price}*
 
 {content.get('description', 'Get this amazing phone at Tripple K Communications!')}
 
 {'' if not badges_text else badges_text + '\n\n'}
 
-🚀 *{cta}* - Call: {TRIPPLEK_PHONE}
-💬 WhatsApp: {TRIPPLEK_WHATSAPP}
-📍 Location: {TRIPPLEK_LOCATION}
-🌐 {TRIPPLEK_URL}
+ðŸš€ *{cta}* - Call: {TRIPPLEK_PHONE}
+ðŸ’¬ WhatsApp: {TRIPPLEK_WHATSAPP}
+ðŸ“ Location: {TRIPPLEK_LOCATION}
+ðŸŒ {TRIPPLEK_URL}
 
 {content.get('hashtags', '#TrippleK #Smartphones')}""")
 
@@ -1376,27 +1376,27 @@ Price: KES {formatted_price}
 
 {'' if not badges_text else badges_text}
 
-🚀 {cta}
-📍 {TRIPPLEK_LOCATION}
-📞 {TRIPPLEK_PHONE}
-🌐 {TRIPPLEK_URL}
+ðŸš€ {cta}
+ðŸ“ {TRIPPLEK_LOCATION}
+ðŸ“ž {TRIPPLEK_PHONE}
+ðŸŒ {TRIPPLEK_URL}
 
 {content.get('hashtags', '#TrippleK #Smartphones #PhoneDeals')}""")
 
     # TikTok/Instagram Post
-    tiktok_post = content.get('tiktok', f"""{phone_data['name']} 🔥
+    tiktok_post = content.get('tiktok', f"""{phone_data['name']} ðŸ”¥
 
 {content.get('hook', 'Check out this amazing phone!')}
 
 {specs_text}
-💸 KES {formatted_price}
+ðŸ’¸ KES {formatted_price}
 
 {content.get('description', 'Available at Tripple K Communications')}
 
 {'' if not badges_text else badges_text}
 
-🚀 {cta} | 📍 {TRIPPLEK_LOCATION}
-📞 {TRIPPLEK_PHONE}
+ðŸš€ {cta} | ðŸ“ {TRIPPLEK_LOCATION}
+ðŸ“ž {TRIPPLEK_PHONE}
 
 {content.get('hashtags', '#TrippleK #Phone #Tech')}""")
 
@@ -1420,8 +1420,8 @@ def generate_marketing_content(phone_data: dict) -> dict:
             "description": f"Get the amazing {phone_data['name']} at Tripple K Communications! With top-notch features and official warranty.",
             "hashtags": "#TrippleK #Smartphones #Deals #Tech",
             "facebook": f"{phone_data['name']} - Now Available at Tripple K Communications! Featuring great specs and official warranty. Visit us in CBD Opposite MKU Towers.",
-            "whatsapp": f"📱 {phone_data['name']} now available!\nGreat specs & warranty. Visit: CBD Opposite MKU Towers\nCall: {TRIPPLEK_PHONE}",
-            "tiktok": f"🔥 New {phone_data['name']} just dropped!\nCheck out these specs! 💥"
+            "whatsapp": f"ðŸ“± {phone_data['name']} now available!\nGreat specs & warranty. Visit: CBD Opposite MKU Towers\nCall: {TRIPPLEK_PHONE}",
+            "tiktok": f"ðŸ”¥ New {phone_data['name']} just dropped!\nCheck out these specs! ðŸ’¥"
         }
 
     try:
@@ -1466,8 +1466,8 @@ def generate_marketing_content(phone_data: dict) -> dict:
         Description: Get the amazing {phone_data['name']} at Tripple K Communications! With top-notch features and official warranty.
         Hashtags: #TrippleK #Smartphones #Deals #Tech
         Facebook: {phone_data['name']} now available at Tripple K Communications! Visit us in {TRIPPLEK_LOCATION} for the best deals. Call {TRIPPLEK_PHONE}
-        WhatsApp: 📱 {phone_data['name']} now available!\nGreat specs & warranty. Visit: {TRIPPLEK_LOCATION}\nCall: {TRIPPLEK_PHONE}
-        TikTok: 🔥 New {phone_data['name']} just dropped!\nCheck out these specs! 💥
+        WhatsApp: ðŸ“± {phone_data['name']} now available!\nGreat specs & warranty. Visit: {TRIPPLEK_LOCATION}\nCall: {TRIPPLEK_PHONE}
+        TikTok: ðŸ”¥ New {phone_data['name']} just dropped!\nCheck out these specs! ðŸ’¥
         """
 
         response = client.chat.completions.create(
@@ -1520,9 +1520,9 @@ def generate_marketing_content(phone_data: dict) -> dict:
             if not content["facebook"]:
                 content["facebook"] = f"{phone_data['name']} - Now Available at Tripple K Communications! Featuring great specs and official warranty. Visit us in {TRIPPLEK_LOCATION}."
             if not content["whatsapp"]:
-                content["whatsapp"] = f"📱 {phone_data['name']} now available!\nGreat specs & warranty. Visit: {TRIPPLEK_LOCATION}\nCall: {TRIPPLEK_PHONE}"
+                content["whatsapp"] = f"ðŸ“± {phone_data['name']} now available!\nGreat specs & warranty. Visit: {TRIPPLEK_LOCATION}\nCall: {TRIPPLEK_PHONE}"
             if not content["tiktok"]:
-                content["tiktok"] = f"🔥 New {phone_data['name']} just dropped!\nCheck out these specs! 💥"
+                content["tiktok"] = f"ðŸ”¥ New {phone_data['name']} just dropped!\nCheck out these specs! ðŸ’¥"
 
             return content
         else:
@@ -1533,8 +1533,8 @@ def generate_marketing_content(phone_data: dict) -> dict:
                 "description": f"Get the amazing {phone_data['name']} at Tripple K Communications! With top-notch features and official warranty.",
                 "hashtags": "#TrippleK #Smartphones #Deals #Tech",
                 "facebook": f"{phone_data['name']} - Now Available at Tripple K Communications! Featuring great specs and official warranty. Visit us in {TRIPPLEK_LOCATION}.",
-                "whatsapp": f"📱 {phone_data['name']} now available!\nGreat specs & warranty. Visit: {TRIPPLEK_LOCATION}\nCall: {TRIPPLEK_PHONE}",
-                "tiktok": f"🔥 New {phone_data['name']} just dropped!\nCheck out these specs! 💥"
+                "whatsapp": f"ðŸ“± {phone_data['name']} now available!\nGreat specs & warranty. Visit: {TRIPPLEK_LOCATION}\nCall: {TRIPPLEK_PHONE}",
+                "tiktok": f"ðŸ”¥ New {phone_data['name']} just dropped!\nCheck out these specs! ðŸ’¥"
             }
 
     except Exception as e:
@@ -1546,8 +1546,8 @@ def generate_marketing_content(phone_data: dict) -> dict:
             "description": f"Get the amazing {phone_data['name']} at Tripple K Communications! With top-notch features and official warranty.",
             "hashtags": "#TrippleK #Smartphones #Deals #Tech",
             "facebook": f"{phone_data['name']} - Now Available at Tripple K Communications! Featuring great specs and official warranty. Visit us in {TRIPPLEK_LOCATION}.",
-            "whatsapp": f"📱 {phone_data['name']} now available!\nGreat specs & warranty. Visit: {TRIPPLEK_LOCATION}\nCall: {TRIPPLEK_PHONE}",
-            "tiktok": f"🔥 New {phone_data['name']} just dropped!\nCheck out these specs! 💥"
+            "whatsapp": f"ðŸ“± {phone_data['name']} now available!\nGreat specs & warranty. Visit: {TRIPPLEK_LOCATION}\nCall: {TRIPPLEK_PHONE}",
+            "tiktok": f"ðŸ”¥ New {phone_data['name']} just dropped!\nCheck out these specs! ðŸ’¥"
         }
 
 # ==========================================
@@ -1557,7 +1557,7 @@ def generate_marketing_content(phone_data: dict) -> dict:
 def main():
     # Header
     st.markdown('<div class="header-box">', unsafe_allow_html=True)
-    st.markdown('<h1 style="margin:0;">📱 Tripple K Phone Marketing Suite</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 style="margin:0;">ðŸ“± Tripple K Phone Marketing Suite</h1>', unsafe_allow_html=True)
     st.markdown('<p style="margin:0.5rem 0 0 0; opacity:0.9;">Professional AI-Powered Marketing Platform</p>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1588,7 +1588,7 @@ def main():
         st.session_state.social_posts = None
 
     # Tabs
-    tabs = st.tabs(["🔍 Find Phone", "📝 Create Content & Posts", "🎨 Generate Ads"])
+    tabs = st.tabs(["ðŸ” Find Phone", "ðŸ“ Create Content & Posts", "ðŸŽ¨ Generate Ads"])
 
     # TAB 1: FIND PHONE
     with tabs[0]:
@@ -1600,7 +1600,7 @@ def main():
                                 placeholder="e.g., Poco X3 Pro, iPhone 14, Samsung S23",
                                 key="search_input")
         with col2:
-            search_btn = st.button("🔍 Search", type="primary", use_container_width=True)
+            search_btn = st.button("ðŸ” Search", type="primary", use_container_width=True)
         
         if search_btn and query:
             with st.spinner("Searching phones..."):
@@ -1608,20 +1608,20 @@ def main():
                     results = search_phones(query)
                     
                     if results:
-                        st.success(f"✅ Found {len(results)} phones")
+                        st.success(f"âœ… Found {len(results)} phones")
                         st.session_state.search_results = results
                         st.session_state.selected_phone_index = -1
                         st.rerun()
                     else:
-                        st.error("❌ No phones found. Try a different search term.")
+                        st.error("âŒ No phones found. Try a different search term.")
                         st.session_state.search_results = []
                         
                 except Exception as e:
-                    st.error(f"❌ Search error: {str(e)}")
+                    st.error(f"âŒ Search error: {str(e)}")
         
         # Display search results
         if st.session_state.search_results:
-            st.markdown("### 📱 Select a Phone")
+            st.markdown("### ðŸ“± Select a Phone")
 
             results = st.session_state.search_results
 
@@ -1666,10 +1666,10 @@ def main():
                         st.session_state.marketing_content = None
                         st.session_state.social_posts = None
 
-                        st.success(f"✅ {phone_name} loaded successfully!")
+                        st.success(f"âœ… {phone_name} loaded successfully!")
                         st.rerun()
                     else:
-                        st.error(f"❌ Could not load details for {phone_name}")
+                        st.error(f"âŒ Could not load details for {phone_name}")
         
         # Display selected phone details
         if st.session_state.current_phone and st.session_state.selected_phone_index >= 0:
@@ -1677,12 +1677,12 @@ def main():
             images = st.session_state.phone_images
             
             st.markdown("---")
-            st.markdown(f"## 📱 {phone_data['name']}")
+            st.markdown(f"## ðŸ“± {phone_data['name']}")
             
             col_img, col_specs = st.columns([1, 1])
             
             with col_img:
-                st.markdown("### 📸 Phone Images")
+                st.markdown("### ðŸ“¸ Phone Images")
                 
                 if images:
                     # Show image selection for viewing
@@ -1714,7 +1714,7 @@ def main():
                         except Exception as e:
                             st.error(f"Error loading image: {e}")
                 else:
-                    st.info("📷 No images available for this phone.")
+                    st.info("ðŸ“· No images available for this phone.")
                     
                     if phone_data.get("image_url"):
                         try:
@@ -1725,17 +1725,17 @@ def main():
                             pass
             
             with col_specs:
-                st.markdown("### 📋 Key Specifications")
+                st.markdown("### ðŸ“‹ Key Specifications")
                 st.markdown('<div class="specs-container">', unsafe_allow_html=True)
 
                 # Display more specific specs: screen, camera, processor, ram, storage, battery
                 display_specs = [
-                    ("🖥️ Screen", phone_data["specs"].get('screen', 'N/A')),
-                    ("📸 Camera", phone_data["specs"].get('camera', 'N/A')),
-                    ("🚀 Processor", phone_data["specs"].get('chipset', 'N/A')),
-                    ("⚡ RAM", phone_data["specs"].get('ram', 'N/A')),
-                    ("💾 Storage", phone_data["specs"].get('storage', 'N/A')),
-                    ("🔋 Battery", phone_data["specs"].get('battery', 'N/A')),
+                    ("ðŸ–¥ï¸ Screen", phone_data["specs"].get('screen', 'N/A')),
+                    ("ðŸ“¸ Camera", phone_data["specs"].get('camera', 'N/A')),
+                    ("ðŸš€ Processor", phone_data["specs"].get('chipset', 'N/A')),
+                    ("âš¡ RAM", phone_data["specs"].get('ram', 'N/A')),
+                    ("ðŸ’¾ Storage", phone_data["specs"].get('storage', 'N/A')),
+                    ("ðŸ”‹ Battery", phone_data["specs"].get('battery', 'N/A')),
                 ]
 
                 specs_displayed = 0
@@ -1755,17 +1755,17 @@ def main():
                 st.markdown('</div>', unsafe_allow_html=True)
                 
                 # Price input
-                st.markdown("### 💰 Set Price")
+                st.markdown("### ðŸ’° Set Price")
                 price = st.text_input("Enter price (e.g., 45,999):",
                                     value=st.session_state.phone_price,
                                     placeholder="e.g., 45,999 or 45999",
                                     key="tab1_price")
 
-                if st.button("💰 Set Price", key="set_price_btn", use_container_width=True):
+                if st.button("ðŸ’° Set Price", key="set_price_btn", use_container_width=True):
                     if price:
                         st.session_state.phone_price = price
                         formatted_price = format_price(price)
-                        st.success(f"✅ Price set to KES {formatted_price}")
+                        st.success(f"âœ… Price set to KES {formatted_price}")
                         st.rerun()
                     else:
                         st.warning("Please enter a valid price")
@@ -1780,7 +1780,7 @@ def main():
         st.subheader("Create Marketing Content & Social Posts")
 
         if not st.session_state.current_phone:
-            st.info("👈 First search and select a phone from the Find Phone tab")
+            st.info("ðŸ‘ˆ First search and select a phone from the Find Phone tab")
         else:
             phone_data = st.session_state.current_phone
 
@@ -1788,10 +1788,10 @@ def main():
 
             # Show current price
             formatted_price = format_price(st.session_state.phone_price)
-            st.markdown(f"### 💰 Current Price: KES {formatted_price}")
+            st.markdown(f"### ðŸ’° Current Price: KES {formatted_price}")
 
             # Badge selection
-            st.markdown("### 🏷️ Select Badges")
+            st.markdown("### ðŸ·ï¸ Select Badges")
             st.markdown('<div class="badge-selection">', unsafe_allow_html=True)
 
             cols = st.columns(4)
@@ -1812,21 +1812,21 @@ def main():
             st.markdown('</div>', unsafe_allow_html=True)
 
             # Generate content button
-            if st.button("🚀 Generate AI Content", type="primary", disabled=not client, use_container_width=True):
+            if st.button("ðŸš€ Generate AI Content", type="primary", disabled=not client, use_container_width=True):
                 with st.spinner("Creating marketing content..."):
                     content = generate_marketing_content(phone_data)
 
                     if content:
                         st.session_state.marketing_content = content
                         st.balloons()
-                        st.success("✅ Content generated successfully!")
+                        st.success("âœ… Content generated successfully!")
                         st.rerun()
 
             # Edit content
             if st.session_state.marketing_content:
                 content = st.session_state.marketing_content
 
-                st.markdown("### 📝 Edit Content")
+                st.markdown("### ðŸ“ Edit Content")
 
                 hook = st.text_input("Hook (Headline):",
                                    value=content.get('hook', f"{phone_data['name']} - Now Available!"),
@@ -1843,18 +1843,18 @@ def main():
                                        key="content_tags")
 
                 # Platform-specific content
-                st.markdown("### 📱 Platform-Specific Content")
+                st.markdown("### ðŸ“± Platform-Specific Content")
 
                 facebook_post = st.text_area("Facebook Post:",
                                            value=content.get('facebook', f"{phone_data['name']} - Now Available at Tripple K Communications! Featuring great specs and official warranty."),
                                            height=100,
                                            key="facebook_post")
                 whatsapp_post = st.text_area("WhatsApp Message:",
-                                           value=content.get('whatsapp', f"📱 {phone_data['name']} now available!"),
+                                           value=content.get('whatsapp', f"ðŸ“± {phone_data['name']} now available!"),
                                            height=100,
                                            key="whatsapp_post")
                 tiktok_post = st.text_area("TikTok Caption:",
-                                         value=content.get('tiktok', f"🔥 New {phone_data['name']} just dropped!"),
+                                         value=content.get('tiktok', f"ðŸ”¥ New {phone_data['name']} just dropped!"),
                                          height=100,
                                          key="tiktok_post")
 
@@ -1870,7 +1870,7 @@ def main():
                 }
 
                 # Preview
-                st.markdown("### 👁️ Content Preview")
+                st.markdown("### ðŸ‘ï¸ Content Preview")
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown(f"""
@@ -1890,7 +1890,7 @@ def main():
                     """)
 
                 # Generate social posts button
-                if st.button("📱 Generate Social Posts", type="secondary", use_container_width=True):
+                if st.button("ðŸ“± Generate Social Posts", type="secondary", use_container_width=True):
                     with st.spinner("Creating social media posts..."):
                         social_posts = generate_social_posts(
                             phone_data=phone_data,
@@ -1899,26 +1899,26 @@ def main():
                             badges=st.session_state.selected_badges
                         )
                         st.session_state.social_posts = social_posts
-                        st.success("✅ Social posts generated!")
+                        st.success("âœ… Social posts generated!")
                         st.rerun()
 
                 # Display social posts if generated
                 if st.session_state.social_posts:
-                    st.markdown("### 📱 Generated Social Posts")
+                    st.markdown("### ðŸ“± Generated Social Posts")
 
                     # WhatsApp Post
                     st.markdown('<div class="social-post">', unsafe_allow_html=True)
                     # Note: WhatsApp doesn't have a specific icon in PLATFORM_INFO, so using default emoji
-                    st.markdown('### 💬 WhatsApp Post')
+                    st.markdown('### ðŸ’¬ WhatsApp Post')
                     st.code(st.session_state.social_posts["whatsapp"], language=None)
 
                     col1, col2, col3 = st.columns([2, 1, 1])
                     with col1:
-                        if st.button("📋 Copy WhatsApp Post", key="copy_whatsapp", use_container_width=True, type="secondary"):
+                        if st.button("ðŸ“‹ Copy WhatsApp Post", key="copy_whatsapp", use_container_width=True, type="secondary"):
                             copy_to_clipboard(st.session_state.social_posts["whatsapp"])
                     with col2:
                         st.download_button(
-                            label="📥 Download",
+                            label="ðŸ“¥ Download",
                             data=st.session_state.social_posts["whatsapp"],
                             file_name="whatsapp_post.txt",
                             mime="text/plain",
@@ -1928,21 +1928,21 @@ def main():
                         # Create WhatsApp sharing link
                         whatsapp_text = st.session_state.social_posts["whatsapp"].replace("\n", "%0A")
                         whatsapp_url = f"https://wa.me/?text={whatsapp_text}"
-                        st.link_button("📤 Share on WhatsApp", whatsapp_url, use_container_width=True, type="primary")
+                        st.link_button("ðŸ“¤ Share on WhatsApp", whatsapp_url, use_container_width=True, type="primary")
                     st.markdown('</div>', unsafe_allow_html=True)
 
                     # Facebook Post
                     st.markdown('<div class="social-post">', unsafe_allow_html=True)
-                    st.markdown(f'### 👤 {PLATFORM_INFO["facebook"]["name"]} Post')
+                    st.markdown(f'### ðŸ‘¤ {PLATFORM_INFO["facebook"]["name"]} Post')
                     st.code(st.session_state.social_posts["facebook"], language=None)
 
                     col1, col2, col3 = st.columns([2, 1, 1])
                     with col1:
-                        if st.button("📋 Copy Facebook Post", key="copy_facebook", use_container_width=True, type="secondary"):
+                        if st.button("ðŸ“‹ Copy Facebook Post", key="copy_facebook", use_container_width=True, type="secondary"):
                             copy_to_clipboard(st.session_state.social_posts["facebook"])
                     with col2:
                         st.download_button(
-                            label="📥 Download",
+                            label="ðŸ“¥ Download",
                             data=st.session_state.social_posts["facebook"],
                             file_name="facebook_post.txt",
                             mime="text/plain",
@@ -1952,21 +1952,21 @@ def main():
                         # Create Facebook sharing link
                         facebook_text = st.session_state.social_posts["facebook"].replace("\n", "%0A")
                         facebook_url = f"https://www.facebook.com/sharer/sharer.php?u={requests.utils.quote(TRIPPLEK_URL)}&t={facebook_text}"
-                        st.link_button("📤 Share on Facebook", facebook_url, use_container_width=True, type="primary")
+                        st.link_button("ðŸ“¤ Share on Facebook", facebook_url, use_container_width=True, type="primary")
                     st.markdown('</div>', unsafe_allow_html=True)
 
                     # TikTok/Instagram Post
                     st.markdown('<div class="social-post">', unsafe_allow_html=True)
-                    st.markdown(f'### 🎵 {PLATFORM_INFO["tiktok"]["name"]} Post')
+                    st.markdown(f'### ðŸŽµ {PLATFORM_INFO["tiktok"]["name"]} Post')
                     st.code(st.session_state.social_posts["tiktok"], language=None)
 
                     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
                     with col1:
-                        if st.button("📋 Copy TikTok Post", key="copy_tiktok", use_container_width=True, type="secondary"):
+                        if st.button("ðŸ“‹ Copy TikTok Post", key="copy_tiktok", use_container_width=True, type="secondary"):
                             copy_to_clipboard(st.session_state.social_posts["tiktok"])
                     with col2:
                         st.download_button(
-                            label="📥 Download",
+                            label="ðŸ“¥ Download",
                             data=st.session_state.social_posts["tiktok"],
                             file_name="tiktok_post.txt",
                             mime="text/plain",
@@ -1974,10 +1974,10 @@ def main():
                         )
                     with col3:
                         # Create Instagram sharing link
-                        st.link_button("📤 Share on Instagram", "https://www.instagram.com/create/", use_container_width=True, type="primary")
+                        st.link_button("ðŸ“¤ Share on Instagram", "https://www.instagram.com/create/", use_container_width=True, type="primary")
                     with col4:
                         # Create TikTok sharing link
-                        st.link_button("📤 Share on TikTok", "https://www.tiktok.com/upload", use_container_width=True, type="primary")
+                        st.link_button("ðŸ“¤ Share on TikTok", "https://www.tiktok.com/upload", use_container_width=True, type="primary")
                     st.markdown('</div>', unsafe_allow_html=True)
             else:
                 st.info("Click 'Generate AI Content' or manually enter content below.")
@@ -1997,14 +1997,14 @@ def main():
                                        value="#TrippleK #Smartphones #Deals",
                                        key="manual_tags")
 
-                if st.button("💾 Save Content", use_container_width=True):
+                if st.button("ðŸ’¾ Save Content", use_container_width=True):
                     st.session_state.marketing_content = {
                         "hook": hook,
                         "cta": cta,
                         "description": description,
                         "hashtags": hashtags
                     }
-                    st.success("✅ Content saved!")
+                    st.success("âœ… Content saved!")
                     st.rerun()
 
     # TAB 3: GENERATE ADS
@@ -2012,13 +2012,13 @@ def main():
         st.subheader("Create Visual Ads")
 
         if not st.session_state.current_phone:
-            st.info("👈 First search and select a phone from the Find Phone tab")
+            st.info("ðŸ‘ˆ First search and select a phone from the Find Phone tab")
         else:
             phone_data = st.session_state.current_phone
             images = st.session_state.phone_images
 
             # Image selection for ad using dropdown
-            st.markdown("### 🖼️ Select Image for Ad")
+            st.markdown("### ðŸ–¼ï¸ Select Image for Ad")
             if images:
                 # Create dropdown for image selection
                 image_options = [f"Image {i+1}" for i in range(len(images))]
@@ -2038,20 +2038,20 @@ def main():
                 selected_image_url = images[selected_ad_idx] if selected_ad_idx < len(images) else None
 
                 if selected_image_url:
-                    st.info(f"📸 Using {selected_image_label} for ads")
+                    st.info(f"ðŸ“¸ Using {selected_image_label} for ads")
             else:
-                st.warning("⚠️ No images available. Using default.")
+                st.warning("âš ï¸ No images available. Using default.")
                 selected_image_url = phone_data.get("image_url")
 
             # Platform selection
-            st.markdown("### 🎯 Select Platform")
+            st.markdown("### ðŸŽ¯ Select Platform")
             platform = st.radio("Choose platform:",
                               ["Facebook", "WhatsApp", "Instagram"],
                               horizontal=True,
                               label_visibility="collapsed")
 
             # Badge selection for ads
-            st.markdown("### 🏷️ Select Badges for Ad")
+            st.markdown("### ðŸ·ï¸ Select Badges for Ad")
             st.markdown('<div class="badge-selection">', unsafe_allow_html=True)
 
             cols = st.columns(4)
@@ -2072,7 +2072,7 @@ def main():
             st.markdown('</div>', unsafe_allow_html=True)
 
             # Content selection
-            st.markdown("### 📝 Ad Content")
+            st.markdown("### ðŸ“ Ad Content")
             content = st.session_state.marketing_content or {}
 
             col1, col2 = st.columns(2)
@@ -2087,10 +2087,10 @@ def main():
 
             # Price display
             formatted_price = format_price(st.session_state.phone_price)
-            st.markdown(f"### 💰 Price: {formatted_price}")
+            st.markdown(f"### ðŸ’° Price: {formatted_price}")
 
             # Generate ad button
-            if st.button("✨ Generate Ad", type="primary", use_container_width=True):
+            if st.button("âœ¨ Generate Ad", type="primary", use_container_width=True):
                 with st.spinner(f"Creating {platform} ad..."):
                     try:
                         # Create ad generator
@@ -2109,7 +2109,7 @@ def main():
                         )
 
                         # Display ad
-                        st.markdown(f"### 🖼️ {platform} Ad Preview")
+                        st.markdown(f"### ðŸ–¼ï¸ {platform} Ad Preview")
                         st.image(ad_image, use_container_width=True)
 
                         # Download and share buttons
@@ -2123,7 +2123,7 @@ def main():
                         col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
                         with col1:
                             st.download_button(
-                                label="📥 Download PNG",
+                                label="ðŸ“¥ Download PNG",
                                 data=buf.getvalue(),
                                 file_name=filename,
                                 mime="image/png",
@@ -2132,27 +2132,27 @@ def main():
                         with col2:
                             # Share on Facebook
                             facebook_share_url = f"https://www.facebook.com/sharer/sharer.php?u={requests.utils.quote(TRIPPLEK_URL)}"
-                            st.link_button("📤 Share on Facebook", facebook_share_url, use_container_width=True, type="secondary")
+                            st.link_button("ðŸ“¤ Share on Facebook", facebook_share_url, use_container_width=True, type="secondary")
                         with col3:
                             # Share on WhatsApp
                             whatsapp_share_url = f"https://wa.me/?text=Check%20out%20this%20amazing%20{requests.utils.quote(phone_data['name'])}%20available%20at%20Tripple%20K!"
-                            st.link_button("📤 Share on WhatsApp", whatsapp_share_url, use_container_width=True, type="secondary")
+                            st.link_button("ðŸ“¤ Share on WhatsApp", whatsapp_share_url, use_container_width=True, type="secondary")
                         with col4:
                             # Share on Instagram
-                            st.link_button("📤 Share on Instagram", "https://www.instagram.com/create/", use_container_width=True, type="secondary")
+                            st.link_button("ðŸ“¤ Share on Instagram", "https://www.instagram.com/create/", use_container_width=True, type="secondary")
 
-                        st.success(f"✅ {platform} ad created successfully!")
+                        st.success(f"âœ… {platform} ad created successfully!")
 
                     except Exception as e:
-                        st.error(f"❌ Error creating ad: {str(e)}")
+                        st.error(f"âŒ Error creating ad: {str(e)}")
 
     # Footer
     st.markdown("---")
     st.markdown(f"""
     <div style="text-align: center; color: {BRAND_MAROON}; padding: 1rem;">
         <h4>Tripple K Communications</h4>
-        <p>📞 {TRIPPLEK_PHONE} | 💬 {TRIPPLEK_WHATSAPP} | 🌐 {TRIPPLEK_URL}</p>
-        <p>📍 {TRIPPLEK_LOCATION}</p>
+        <p>ðŸ“ž {TRIPPLEK_PHONE} | ðŸ’¬ {TRIPPLEK_WHATSAPP} | ðŸŒ {TRIPPLEK_URL}</p>
+        <p>ðŸ“ {TRIPPLEK_LOCATION}</p>
         <p style="font-size: 0.9em; color: #666;">Marketing Suite v5.0 | Powered by GSM Arena API</p>
     </div>
     """, unsafe_allow_html=True)
