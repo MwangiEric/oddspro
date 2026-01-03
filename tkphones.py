@@ -701,4 +701,4 @@ def main():
     with col2:
         st.subheader("Step 2: Set Price & Generate")
         
-        if 'selected_phone' in st.session_state and st.session_state.selecte
+        if 'selected_phone' in st.session_state and st.session_state.selected:
