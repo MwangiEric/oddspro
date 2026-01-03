@@ -27,16 +27,18 @@ CONFIG = {
         "maroon": "#8B0000",
         "gold": "#FFD700",
         "accent": "#FF6B35",
+        "mint": "#3EB489",  # Added mint color
         "white": "#FFFFFF",
         "black": "#333333",
     },
     "contact": {
         "phone": "+254700123456",
-        "url": "https://www.tripplek.co.ke",
+        "url": "www.tripplek.co.ke",  # Removed https://
         "location": "CBD Opposite MKU Towers"
     },
     "assets": {
         "logo": "https://ik.imagekit.io/ericmwangi/tklogo.png?updatedAt=1764543349107",
+        "whatsapp_icon": "https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg",
         "icons": {
             "screen": "https://ik.imagekit.io/ericmwangi/screen.png",
             "camera": "https://ik.imagekit.io/ericmwangi/camera.png",
@@ -57,36 +59,36 @@ CONFIG = {
     }
 }
 
-# Layout Dictionary - Just change coordinates for different platforms
+# Layout Dictionary with larger logo sizes
 LAYOUTS = {
     "facebook": {
         "size": (1200, 630),
-        "logo": {"x": 40, "y": 35, "w": 200, "h": 70},
-        "phone": {"x": 80, "y": 80, "w": 550, "h": 550},
-        "content": {"x": 680, "y": 100},
-        "specs": {"start_y": 180, "spacing": 70, "icon_size": 52},
-        "price": {"x": 680, "y": 470, "w": 400, "h": 85},
+        "logo": {"x": 40, "y": 30, "w": 250, "h": 90},  # Increased size
+        "phone": {"x": 80, "y": 140, "w": 500, "h": 500},
+        "content": {"x": 650, "y": 140},
+        "specs": {"start_y": 220, "spacing": 70, "icon_size": 52},
+        "price": {"x": 650, "y": 490, "w": 380, "h": 85},  # Adjusted size
         "footer": {"y": 580},
         "bg_colors": ("#8B0000", "#4a0000")
     },
     "whatsapp": {
         "size": (1080, 1080),
-        "logo": {"x": 50, "y": 50, "w": 200, "h": 70},
-        "phone": {"x": 240, "y": 190, "w": 600, "h": 600},
-        "content": {"x": 540, "y": 830},
-        "specs": {"col1_x": 270, "col2_x": 810, "start_y": 830, "spacing": 65, "icon_size": 48},
-        "price": {"x": 315, "y": 980, "w": 450, "h": 95},
+        "logo": {"x": 50, "y": 40, "w": 250, "h": 90},  # Increased size
+        "phone": {"x": 240, "y": 220, "w": 600, "h": 600},
+        "content": {"x": 540, "y": 850},
+        "specs": {"col1_x": 270, "col2_x": 810, "start_y": 850, "spacing": 65, "icon_size": 48},
+        "price": {"x": 315, "y": 980, "w": 420, "h": 85},  # Adjusted size
         "footer": {"y": 1020},
         "bg_colors": ("#FFFFFF", "#FFFFFF"),
         "header_gradient": True
     },
     "instagram": {
         "size": (1080, 1350),
-        "logo": {"x": 440, "y": 35, "w": 200, "h": 70},
-        "phone": {"x": 190, "y": 130, "w": 700, "h": 700},
-        "content": {"x": 540, "y": 870},
-        "specs": {"start_x": 140, "y": 900, "spacing": 220, "icon_size": 65},
-        "price": {"x": 290, "y": 1050, "w": 500, "h": 95},
+        "logo": {"x": 415, "y": 30, "w": 250, "h": 90},  # Increased size
+        "phone": {"x": 190, "y": 150, "w": 700, "h": 700},
+        "content": {"x": 540, "y": 900},
+        "specs": {"start_x": 140, "y": 920, "spacing": 220, "icon_size": 65},
+        "price": {"x": 290, "y": 1050, "w": 450, "h": 85},  # Adjusted size
         "footer": {"y": 1290},
         "bg_colors": ("#0c2461", "#1e3799")
     }
@@ -153,33 +155,28 @@ def download_image(url: str) -> Optional[Image.Image]:
     return None
 
 def remove_background(img: Image.Image) -> Image.Image:
-    """Remove background using rembg or fallback"""
-    if not REMBG_AVAILABLE:
-        # Simple fallback
-        if img.mode != 'RGBA':
-            img = img.convert('RGBA')
-        data = img.getdata()
-        new_data = []
-        for item in data:
-            r, g, b = item[:3]
-            a = item[3] if len(item) == 4 else 255
-            if r > 240 and g > 240 and b > 240:
-                new_data.append((255, 255, 255, 0))
-            else:
-                new_data.append((r, g, b, a))
-        img.putdata(new_data)
-        return img
+    """Improved background removal - gentler on phone images"""
+    if img.mode != 'RGBA':
+        img = img.convert('RGBA')
     
-    # Use rembg
-    try:
-        buf = BytesIO()
-        img.save(buf, format='PNG')
-        buf.seek(0)
-        output = rembg_remove(buf.read())
-        result = Image.open(BytesIO(output))
-        return result.convert('RGBA')
-    except:
-        return img
+    # Simple but effective: remove white/light backgrounds only
+    data = img.getdata()
+    new_data = []
+    
+    for item in data:
+        r, g, b, a = item
+        
+        # Keep the phone image, remove only very light backgrounds
+        if r > 245 and g > 245 and b > 245:  # Very white
+            new_data.append((255, 255, 255, 0))
+        elif r > 230 and g > 230 and b > 230:  # Light gray
+            new_data.append((255, 255, 255, 50))  # Slightly transparent
+        else:
+            # Keep phone pixels as is
+            new_data.append(item)
+    
+    img.putdata(new_data)
+    return img
 
 @st.cache_data(ttl=86400)
 def get_icon(name: str, size: int) -> Image.Image:
@@ -203,6 +200,28 @@ def get_icon(name: str, size: int) -> Image.Image:
     except:
         font = ImageFont.load_default()
     draw.text((size//2, size//2), name[0].upper(), fill="white", font=font, anchor="mm")
+    return img
+
+def get_whatsapp_icon(size: int = 30) -> Image.Image:
+    """Get WhatsApp icon"""
+    icon = download_image(CONFIG['assets']['whatsapp_icon'])
+    if icon:
+        icon = icon.resize((size, size), Image.Resampling.LANCZOS)
+        # Make it green
+        data = icon.getdata()
+        new_data = []
+        for item in data:
+            if item[3] > 0:  # Not transparent
+                new_data.append((37, 211, 102, item[3]))  # WhatsApp green
+            else:
+                new_data.append(item)
+        icon.putdata(new_data)
+        return icon
+    
+    # Fallback
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([0, 0, size, size], fill="#25D366")  # WhatsApp green
     return img
 
 # ==========================================
@@ -288,15 +307,14 @@ class AdGenerator:
         self.layout = LAYOUTS[platform]
         self.width, self.height = self.layout["size"]
         
-        # Load Poppins font
+        # Load fonts with fallbacks
+        self.fonts = {}
         try:
-            self.fonts = {
-                "title": ImageFont.truetype("poppins.ttf", CONFIG['fonts']['title']),
-                "subtitle": ImageFont.truetype("poppins.ttf", CONFIG['fonts']['subtitle']),
-                "body": ImageFont.truetype("poppins.ttf", CONFIG['fonts']['body']),
-                "price": ImageFont.truetype("poppins.ttf", CONFIG['fonts']['price']),
-                "small": ImageFont.truetype("poppins.ttf", CONFIG['fonts']['small'])
-            }
+            self.fonts["title"] = ImageFont.truetype("poppins.ttf", CONFIG['fonts']['title'])
+            self.fonts["subtitle"] = ImageFont.truetype("poppins.ttf", CONFIG['fonts']['subtitle'])
+            self.fonts["body"] = ImageFont.truetype("poppins.ttf", CONFIG['fonts']['body'])
+            self.fonts["price"] = ImageFont.truetype("poppins.ttf", CONFIG['fonts']['price'])
+            self.fonts["small"] = ImageFont.truetype("poppins.ttf", CONFIG['fonts']['small'])
         except:
             default = ImageFont.load_default()
             self.fonts = {k: default for k in ["title", "subtitle", "body", "price", "small"]}
@@ -318,6 +336,29 @@ class AdGenerator:
         
         return img
     
+    def wrap_text(self, text: str, font: ImageFont.ImageFont, max_width: int) -> str:
+        """Wrap text to fit within max_width"""
+        words = text.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            bbox = ImageDraw.Draw(Image.new('RGB', (1, 1))).textbbox((0, 0), test_line, font=font)
+            width = bbox[2] - bbox[0]
+            
+            if width <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return '\n'.join(lines)
+    
     def generate(self, phone_name: str, specs: Dict, price: str, phone_img_url: str) -> Image.Image:
         """Generate ad using layout dictionary"""
         
@@ -335,39 +376,66 @@ class AdGenerator:
         
         draw = ImageDraw.Draw(img, 'RGBA')
         
-        # Logo
+        # Logo (larger size)
         logo = download_image(CONFIG['assets']['logo'])
         if logo:
             logo_cfg = self.layout["logo"]
             logo.thumbnail((logo_cfg["w"], logo_cfg["h"]), Image.Resampling.LANCZOS)
             img.paste(logo, (logo_cfg["x"], logo_cfg["y"]), logo)
         
+        # Phone name centered after logo
+        logo_cfg = self.layout["logo"]
+        name_y = logo_cfg["y"] + logo_cfg["h"] + 20
+        
+        # Wrap phone name to fit canvas width
+        max_name_width = self.width - 80  # 40px margin on each side
+        wrapped_name = self.wrap_text(phone_name[:40], self.fonts["title"], max_name_width)
+        
+        # Draw each line centered
+        name_lines = wrapped_name.split('\n')
+        for i, line in enumerate(name_lines):
+            bbox = draw.textbbox((0, 0), line, font=self.fonts["title"])
+            line_width = bbox[2] - bbox[0]
+            x = (self.width - line_width) // 2
+            y = name_y + (i * (CONFIG['fonts']['title'] + 5))
+            text_color = (255, 255, 255, 255) if self.platform != "whatsapp" else (51, 51, 51, 255)
+            draw.text((x, y), line, fill=text_color, font=self.fonts["title"])
+        
+        # Adjust phone position based on name height
+        name_height = len(name_lines) * (CONFIG['fonts']['title'] + 5)
+        phone_y_adjust = name_y + name_height + 30
+        
         # Phone image
         if phone_img_url:
             phone_img = download_image(phone_img_url)
             if phone_img:
+                # Only remove background if it's mostly white
                 phone_img = remove_background(phone_img)
                 phone_cfg = self.layout["phone"]
                 phone_img.thumbnail((phone_cfg["w"], phone_cfg["h"]), Image.Resampling.LANCZOS)
                 
                 x = phone_cfg["x"] + (phone_cfg["w"] - phone_img.width) // 2
-                y = phone_cfg["y"] + (phone_cfg["h"] - phone_img.height) // 2
+                y = phone_y_adjust
                 
                 # Shadow
                 shadow = Image.new('RGBA', (phone_img.width + 30, phone_img.height + 30), (0, 0, 0, 100))
                 shadow = shadow.filter(ImageFilter.GaussianBlur(radius=20))
                 img.paste(shadow, (x - 15, y + 15), shadow)
                 img.paste(phone_img, (x, y), phone_img)
+                
+                # Update content position for specs
+                content_y = y + phone_img.height + 40
+            else:
+                content_y = phone_y_adjust + 100
+        else:
+            content_y = phone_y_adjust + 100
         
         # Content
         text_color = (255, 255, 255, 255) if self.platform != "whatsapp" else (51, 51, 51, 255)
         accent_color = tuple(int(CONFIG['brand']['gold'][i:i+2], 16) for i in (1, 3, 5)) + (255,)
+        mint_color = tuple(int(CONFIG['brand']['mint'][i:i+2], 16) for i in (1, 3, 5)) + (255,)
         
         content_cfg = self.layout["content"]
-        
-        # Phone name
-        draw.text((content_cfg["x"], content_cfg["y"]), phone_name[:30], 
-                 fill=text_color, font=self.fonts["title"])
         
         # Specs
         spec_cfg = self.layout["specs"]
@@ -377,7 +445,7 @@ class AdGenerator:
             # Two columns
             for i, (name, value) in enumerate(spec_list[:5]):
                 col_x = spec_cfg["col1_x"] if i < 3 else spec_cfg["col2_x"]
-                y = spec_cfg["start_y"] + (i if i < 3 else i - 3) * spec_cfg["spacing"]
+                y = content_y + (i if i < 3 else i - 3) * spec_cfg["spacing"]
                 
                 icon_name = ["screen", "camera", "memory", "storage", "battery"][i]
                 icon = get_icon(icon_name, spec_cfg["icon_size"])
@@ -390,12 +458,12 @@ class AdGenerator:
                 x = spec_cfg["start_x"] + i * spec_cfg["spacing"]
                 icon_name = ["screen", "camera", "memory", "battery"][i]
                 icon = get_icon(icon_name, spec_cfg["icon_size"])
-                img.paste(icon, (x, spec_cfg["y"]), icon)
-                draw.text((x + spec_cfg["icon_size"] // 2, spec_cfg["y"] + spec_cfg["icon_size"] + 15),
+                img.paste(icon, (x, content_y), icon)
+                draw.text((x + spec_cfg["icon_size"] // 2, content_y + spec_cfg["icon_size"] + 15),
                          value, fill=text_color, font=self.fonts["small"], anchor="mm")
         
         else:  # Facebook
-            y = spec_cfg["start_y"]
+            y = content_y
             for i, (name, value) in enumerate(spec_list[:5]):
                 icon_name = ["screen", "camera", "memory", "storage", "battery"][i]
                 icon = get_icon(icon_name, spec_cfg["icon_size"])
@@ -404,99 +472,125 @@ class AdGenerator:
                          value, fill=text_color, font=self.fonts["body"])
                 y += spec_cfg["spacing"]
         
-        # Price
+        # Price badge with better margins
         price_cfg = self.layout["price"]
         price_text = f"KES {format_price(price)}"
         
-        price_bg = accent_color if self.platform != "whatsapp" else tuple(int(CONFIG['brand']['maroon'][i:i+2], 16) for i in (1, 3, 5)) + (255,)
+        # Calculate text width to adjust badge
+        bbox = draw.textbbox((0, 0), price_text, font=self.fonts["price"])
+        text_width = bbox[2] - bbox[0]
+        
+        # Adjust badge width to have good margins
+        badge_width = max(price_cfg["w"], text_width + 80)  # 40px margin on each side
+        
+        # Center badge if needed
+        if badge_width > price_cfg["w"]:
+            badge_x = (self.width - badge_width) // 2
+        else:
+            badge_x = price_cfg["x"]
+        
+        # Use mint color for price badge
+        price_bg = mint_color if self.platform != "whatsapp" else tuple(int(CONFIG['brand']['maroon'][i:i+2], 16) for i in (1, 3, 5)) + (255,)
         price_text_color = tuple(int(CONFIG['brand']['maroon'][i:i+2], 16) for i in (1, 3, 5)) + (255,) if self.platform != "whatsapp" else accent_color
         
         draw.rounded_rectangle(
-            [price_cfg["x"], price_cfg["y"], price_cfg["x"] + price_cfg["w"], price_cfg["y"] + price_cfg["h"]],
+            [badge_x, price_cfg["y"], badge_x + badge_width, price_cfg["y"] + price_cfg["h"]],
             radius=18, fill=price_bg
         )
         
-        bbox = draw.textbbox((0, 0), price_text, font=self.fonts["price"])
-        text_w = bbox[2] - bbox[0]
-        draw.text((price_cfg["x"] + (price_cfg["w"] - text_w) // 2, price_cfg["y"] + 22),
+        # Center text in badge
+        draw.text((badge_x + (badge_width - text_width) // 2, price_cfg["y"] + 20),
                  price_text, fill=price_text_color, font=self.fonts["price"])
         
-        # Footer
+        # Footer with WhatsApp icon
         footer_y = self.layout["footer"]["y"]
         footer_color = accent_color if self.platform != "whatsapp" else tuple(int(CONFIG['brand']['maroon'][i:i+2], 16) for i in (1, 3, 5)) + (255,)
-        draw.text((self.width // 2, footer_y),
-                 f"📞 {CONFIG['contact']['phone']} | 🌐 {CONFIG['contact']['url']}",
-                 fill=footer_color, font=self.fonts["small"], anchor="mm")
+        
+        # Add WhatsApp icon
+        whatsapp_icon = get_whatsapp_icon(24)
+        icon_x = self.width // 2 - 120
+        img.paste(whatsapp_icon, (icon_x, footer_y - 12), whatsapp_icon)
+        
+        # Draw text with icon
+        draw.text((icon_x + 30, footer_y),
+                 f" {CONFIG['contact']['phone']} | {CONFIG['contact']['url']}",
+                 fill=footer_color, font=self.fonts["small"], anchor="lm")
         
         return img
 
 # ==========================================
-# VIDEO GENERATOR (Real MP4/GIF)
+# VIDEO GENERATOR (Real GIF)
 # ==========================================
 
-def create_video_frames(base_img: Image.Image, num_frames: int = 30) -> List[Image.Image]:
-    """Create video frames with animations"""
+@st.cache_data(ttl=300, max_entries=3)
+def create_video_frames(base_img: Image.Image, num_frames: int = 20) -> List[Image.Image]:
+    """Create video frames with animations - cached"""
     frames = []
     
     for i in range(num_frames):
         frame = base_img.copy()
         
-        # Apply effects based on frame number
-        progress = i / num_frames
-        
-        # Zoom effect (first half)
+        # Simple zoom effect
         if i < num_frames // 2:
-            scale = 1.0 + (progress * 0.05)
+            scale = 1.0 + (i / num_frames) * 0.03
             new_size = (int(frame.width * scale), int(frame.height * scale))
-            frame = frame.resize(new_size, Image.Resampling.LANCZOS)
-            # Crop to original
-            left = (frame.width - base_img.width) // 2
-            top = (frame.height - base_img.height) // 2
-            frame = frame.crop((left, top, left + base_img.width, top + base_img.height))
-        
-        # Brightness pulse
-        enhancer = ImageEnhance.Brightness(frame)
-        brightness = 1.0 + 0.1 * abs(progress - 0.5)
-        frame = enhancer.enhance(brightness)
+            resized = frame.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Crop to center
+            left = (resized.width - frame.width) // 2
+            top = (resized.height - frame.height) // 2
+            frame = resized.crop((left, top, left + frame.width, top + frame.height))
         
         frames.append(frame)
     
     return frames
 
-def save_video_gif(frames: List[Image.Image]) -> BytesIO:
-    """Save as animated GIF"""
+@st.cache_data(ttl=300, max_entries=3)
+def save_video_gif(_frames: List[Image.Image]) -> bytes:
+    """Save as animated GIF - cached"""
     buf = BytesIO()
-    frames[0].save(
+    _frames[0].save(
         buf,
         format='GIF',
         save_all=True,
-        append_images=frames[1:],
-        duration=200,  # 200ms per frame = 6 seconds total for 30 frames
-        loop=0
+        append_images=_frames[1:],
+        duration=300,  # 300ms per frame = 6 seconds for 20 frames
+        loop=0,
+        optimize=True
     )
-    buf.seek(0)
-    return buf
+    return buf.getvalue()
 
 # ==========================================
 # MAIN APP
 # ==========================================
 
 def main():
+    # Initialize session state
+    if 'results' not in st.session_state:
+        st.session_state.results = None
+    if 'phone' not in st.session_state:
+        st.session_state.phone = None
+    if 'ad' not in st.session_state:
+        st.session_state.ad = None
+    if 'video' not in st.session_state:
+        st.session_state.video = None
+    
     st.title("📱 Professional Phone Ad Generator")
     
-    # Config Panel (Collapsible)
+    # Config Panel
     with st.expander("⚙️ Configuration", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Brand Colors:**")
-            st.color_picker("Primary", CONFIG['brand']['maroon'], key="cfg_primary", disabled=True)
-            st.color_picker("Accent", CONFIG['brand']['gold'], key="cfg_accent", disabled=True)
+            st.color_picker("Maroon", CONFIG['brand']['maroon'], key="cfg_maroon", disabled=True)
+            st.color_picker("Gold", CONFIG['brand']['gold'], key="cfg_gold", disabled=True)
+            st.color_picker("Mint", CONFIG['brand']['mint'], key="cfg_mint", disabled=True)
         with col2:
             st.markdown("**Contact:**")
             st.text_input("Phone", CONFIG['contact']['phone'], key="cfg_phone", disabled=True)
             st.text_input("Website", CONFIG['contact']['url'], key="cfg_url", disabled=True)
         
-        st.info(f"🎨 Using Poppins font | 🖼️ rembg: {'✅ Active' if REMBG_AVAILABLE else '❌ Fallback'}")
+        st.info(f"🎨 Using Poppins font | 🖼️ Background removal: {'Simple method'}")
     
     st.markdown("---")
     
@@ -505,9 +599,9 @@ def main():
     
     with col1:
         st.subheader("1️⃣ Search Phone")
-        query = st.text_input("Phone name", placeholder="e.g., Poco X3 Pro")
+        query = st.text_input("Phone name", placeholder="e.g., Poco X3 Pro", key="search_query")
         
-        if st.button("🔍 Search", use_container_width=True):
+        if st.button("🔍 Search", use_container_width=True, key="search_btn"):
             if query:
                 with st.spinner("Searching..."):
                     results = search_phone(query)
@@ -517,14 +611,17 @@ def main():
                     else:
                         st.error("❌ No results")
         
-        if 'results' in st.session_state:
+        if st.session_state.results:
+            st.markdown("**Select a phone:**")
             for idx, phone in enumerate(st.session_state.results[:5]):
-                if st.button(f"📱 {phone.get('name')}", key=f"p_{idx}", use_container_width=True):
-                    with st.spinner("Loading..."):
+                if st.button(f"📱 {phone.get('name', 'Unknown')}", 
+                           key=f"select_{idx}", 
+                           use_container_width=True):
+                    with st.spinner("Loading details..."):
                         details = get_phone_details(phone.get("id", ""))
                         if details:
                             st.session_state.phone = {
-                                "name": phone.get("name"),
+                                "name": phone.get('name', 'Unknown Phone'),
                                 "specs": extract_specs(details),
                                 "image": get_phone_image(phone.get("id", "")) or phone.get("image", "")
                             }
@@ -533,15 +630,15 @@ def main():
     with col2:
         st.subheader("2️⃣ Generate Ad")
         
-        if 'phone' in st.session_state:
+        if st.session_state.phone:
             phone = st.session_state.phone
             st.success(f"**{phone['name']}**")
             
             # Platform & Price
-            platform = st.selectbox("Platform", ["facebook", "whatsapp", "instagram"])
-            price = st.text_input("Price (KES)", "45999")
+            platform = st.selectbox("Platform", ["facebook", "whatsapp", "instagram"], key="platform_select")
+            price = st.text_input("Price (KES)", "45999", key="price_input")
             
-            if st.button("✨ Generate", type="primary", use_container_width=True):
+            if st.button("✨ Generate Ad", type="primary", use_container_width=True, key="generate_btn"):
                 with st.spinner("Creating ad..."):
                     try:
                         gen = AdGenerator(platform)
@@ -555,37 +652,58 @@ def main():
             st.info("👈 Select a phone first")
     
     # Display Ad
-    if 'ad' in st.session_state:
+    if st.session_state.ad:
         st.markdown("---")
         st.subheader("✅ Your Ad")
         
         col1, col2 = st.columns([3, 1])
         
         with col1:
-            st.image(st.session_state.ad)
+            st.image(st.session_state.ad, use_container_width=True)
         
         with col2:
             # Download PNG
             buf_png = BytesIO()
             st.session_state.ad.save(buf_png, format='PNG')
-            st.download_button("📥 PNG", buf_png.getvalue(), "ad.png", "image/png", use_container_width=True)
+            st.download_button(
+                label="📥 PNG", 
+                data=buf_png.getvalue(), 
+                file_name="ad.png", 
+                mime="image/png", 
+                use_container_width=True,
+                key="dl_png"
+            )
             
             # Download JPEG
             buf_jpg = BytesIO()
             st.session_state.ad.convert('RGB').save(buf_jpg, format='JPEG', quality=95)
-            st.download_button("📥 JPEG", buf_jpg.getvalue(), "ad.jpg", "image/jpeg", use_container_width=True)
+            st.download_button(
+                label="📥 JPEG", 
+                data=buf_jpg.getvalue(), 
+                file_name="ad.jpg", 
+                mime="image/jpeg", 
+                use_container_width=True,
+                key="dl_jpg"
+            )
             
             # Generate Video
-            if st.button("🎥 6s Video", use_container_width=True):
+            if st.button("🎥 6s Video", use_container_width=True, key="video_btn"):
                 with st.spinner("Creating video..."):
-                    frames = create_video_frames(st.session_state.ad, 30)
-                    video_gif = save_video_gif(frames)
-                    st.session_state.video = video_gif.getvalue()
+                    frames = create_video_frames(st.session_state.ad, 20)
+                    video_data = save_video_gif(frames)
+                    st.session_state.video = video_data
                     st.success("✅ Video ready!")
             
             # Download Video
-            if 'video' in st.session_state:
-                st.download_button("📥 GIF Video", st.session_state.video, "ad_video.gif", "image/gif", use_container_width=True)
+            if st.session_state.video:
+                st.download_button(
+                    label="📥 GIF Video", 
+                    data=st.session_state.video, 
+                    file_name="ad_video.gif", 
+                    mime="image/gif", 
+                    use_container_width=True,
+                    key="dl_video"
+                )
 
 if __name__ == "__main__":
     main()
