@@ -5,7 +5,7 @@ With Config Panel, rembg, Poppins Font, RGBA, Layout Dictionary, Real Video
 
 import streamlit as st
 import requests
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageSequence
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageSequence,ImageEnhance
 from io import BytesIO
 from typing import Optional, Dict, List
 import re
@@ -180,7 +180,6 @@ def remove_background(img: Image.Image) -> Image.Image:
         return result.convert('RGBA')
     except:
         return img
-
 @st.cache_data(ttl=86400)
 def get_icon(name: str, size: int) -> Image.Image:
     """Get or create icon"""
