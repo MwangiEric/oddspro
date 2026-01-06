@@ -3,7 +3,7 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 import numpy as np
-from moviepy import VideoClip
+from moviepy.editor import VideoClip
 import re
 import random
 
@@ -57,7 +57,7 @@ CONFIG = {
         "location": "CBD, Nairobi", 
         "web": "www.tripplek.co.ke"
     },
-    "placeholder_phone": "https://ik.imagekit.io/ericmwangi/phone_placeholder.png"
+    "placeholder_phone": "https://ik.imagekit.io/ericmwangi/iphone.png"
 }
 
 # ==========================================
@@ -73,50 +73,64 @@ def load_asset(url, size=None):
     except: return Image.new("RGBA", (1,1), (0,0,0,0))
 
 def fetch_device_data(query):
-    # Professional fallback data
+    # Professional fallback data if the search fails entirely
     dummy = {
         "name": query.upper(), 
         "img_url": CONFIG["placeholder_phone"], 
         "specs": [("processor", "Flagship Chip"), ("screen", "OLED Display"), ("memory", "High Speed"), ("battery", "Long Life")]
     }
+    
     try:
         # 1. SEARCH: Get the base_id and official name
         search_res = requests.get(f"https://tkphsp2.vercel.app/gsm/search?q={query}", timeout=10).json()
+        if not search_res: return dummy
         
         base_id = search_res[0]['id'] # e.g., "xiaomi_poco_x3_pro-10802.php"
         official_name = search_res[0]['name']
 
-        # 2. IMAGE ID TRANSFORMATION
-        # The API requires "-pictures-" inserted before the numeric ID
+        # 2. IMAGE ID TRANSFORMATION (Needed for the images endpoint)
         if "-" in base_id:
             parts = base_id.rsplit('-', 1)
-            image_id = f"{parts[0]}-pictures-{parts[1]}"
+            # Remove .php if present in the first part and rebuild
+            clean_part_0 = parts[0].replace(".php", "")
+            image_id = f"{clean_part_0}-pictures-{parts[1]}"
         else:
             image_id = base_id
-        
+
         # 3. FETCH INFO & IMAGES
         info = requests.get(f"https://tkphsp2.vercel.app/gsm/info/{base_id}", timeout=10).json()
-        imgs_data = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{base_id}", timeout=10).json()
-        
-        # 4. IMAGE LOGIC: Priority to Lifestyle Shot (index 1)
-        img_list = imgs_data.get('images', [])
-        api_img = img_list[1]
+        imgs_data = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{image_id}", timeout=10).json()
+        #imgs_data = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{base_id}", timeout=10).json()
 
-        # 5. CLEAN SPECS (Mapped to your specific JSON structure)
-        # Chipset is inside 'platform'
+        # 4. IMAGE LOGIC: Safe extraction (Prevents IndexError)
+        img_list = imgs_data.get('images', [])
+        if len(img_list) > 1:
+            api_img = img_list[1]  # Priority: Lifestyle Shot
+        elif len(img_list) == 1:
+            api_img = img_list[0]  # Fallback: Single image
+        else:
+            api_img = search_res[0].get('image', CONFIG["placeholder_phone"]) # Last resort: Search thumbnail
+
+        # 5. CLEAN SPECS (Safe against structure changes)
         chip = info.get("platform", {}).get("chipset", "High Performance").split('(')[0].strip()
         
-        # Screen is inside 'display' -> 'size'
         display_raw = info.get("display", {}).get("size", "6.7 inches")
-        screen = display_raw.split(',')[0].strip() # Clean "6.67 inches, 107 cm2..." to "6.67 inches"
-        
-        # Memory is inside 'memory' -> 'internal'
-        mem_raw = info.get("memory", {}).get("internal", "128GB 8GB RAM")
-        memory = mem_raw.split(',')[0].strip() # Takes the primary storage/RAM combo
+        screen = display_raw.split(',')[0].strip()
 
-        # Battery is inside 'battery' -> 'battType'
+        # Memory Handling (Handles both List and Dictionary formats)
+        mem_data = info.get("memory", {})
+        if isinstance(mem_data, list) and len(mem_data) > 0:
+            mem_raw = mem_data[0].get("internal", "128GB 8GB RAM")
+        elif isinstance(mem_data, dict):
+            mem_raw = mem_data.get("internal", "128GB 8GB RAM")
+        else:
+            mem_raw = "128GB 8GB RAM"
+        
+        memory = mem_raw.split(',')[0].strip()
+
+        # Battery Handling
         batt_raw = info.get("battery", {}).get("battType", "5000 mAh")
-        batt_match = re.search(r'(\d+)\s*mAh', batt_raw)
+        batt_match = re.search(r'(\d+)\s*mAh', str(batt_raw))
         battery = f"{batt_match.group(1)} mAh" if batt_match else "5000 mAh"
 
         return {
@@ -129,18 +143,10 @@ def fetch_device_data(query):
                 ("battery", battery)
             ]
         }
+        
     except Exception as e:
-        # If any step fails, return the clean dummy data
-        return {
-            "name": official_name,
-"img_url":CONFIG["placeholder_phone"],
-            "specs": [
-                ("processor", chip), 
-                ("screen", screen), 
-                ("memory", memory), 
-                ("battery", battery)
-            ]
-}
+        # If anything breaks, return the query name with placeholders to keep the app running
+        return {**dummy, "name": query.upper()}
 
 # ==========================================
 # 3. MOTION GRAPHICS ENGINE
