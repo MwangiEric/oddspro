@@ -132,8 +132,8 @@ def fetch_device_data(query):
     except Exception as e:
         # If any step fails, return the clean dummy data
         return {
-            "name": official_name, 
-            "img_url": api_img,
+            "name": official_name,
+"img_url":CONFIG["placeholder_phone"],
             "specs": [
                 ("processor", chip), 
                 ("screen", screen), 
