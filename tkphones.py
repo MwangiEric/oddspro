@@ -140,6 +140,7 @@ def fetch_device_data(query):
                 ("memory", memory), 
                 ("battery", battery)
             ]
+}
 
 # ==========================================
 # 3. MOTION GRAPHICS ENGINE
