@@ -82,7 +82,6 @@ def fetch_device_data(query):
     try:
         # 1. SEARCH: Get the base_id and official name
         search_res = requests.get(f"https://tkphsp2.vercel.app/gsm/search?q={query}", timeout=10).json()
-        if not search_res: return dummy
         
         base_id = search_res[0]['id'] # e.g., "xiaomi_poco_x3_pro-10802.php"
         official_name = search_res[0]['name']
@@ -97,11 +96,11 @@ def fetch_device_data(query):
         
         # 3. FETCH INFO & IMAGES
         info = requests.get(f"https://tkphsp2.vercel.app/gsm/info/{base_id}", timeout=10).json()
-        imgs_data = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{image_id}", timeout=10).json()
+        imgs_data = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{base_id}", timeout=10).json()
         
         # 4. IMAGE LOGIC: Priority to Lifestyle Shot (index 1)
         img_list = imgs_data.get('images', [])
-        api_img = img_list[1] if len(img_list) > 1 else search_res[0].get('image', CONFIG["placeholder_phone"])
+        api_img = img_list[1]
 
         # 5. CLEAN SPECS (Mapped to your specific JSON structure)
         # Chipset is inside 'platform'
@@ -132,7 +131,15 @@ def fetch_device_data(query):
         }
     except Exception as e:
         # If any step fails, return the clean dummy data
-        return dummy
+        return {
+            "name": official_name, 
+            "img_url": api_img,
+            "specs": [
+                ("processor", chip), 
+                ("screen", screen), 
+                ("memory", memory), 
+                ("battery", battery)
+            ]
 
 # ==========================================
 # 3. MOTION GRAPHICS ENGINE
