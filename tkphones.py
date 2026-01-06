@@ -3,7 +3,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import requests
 from io import BytesIO
 import numpy as np
-from moviepy.editor import VideoClip
+from moviepy import VideoClip
 import os
 
 # ==========================================
