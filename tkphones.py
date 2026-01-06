@@ -1,9 +1,9 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 import numpy as np
-from moviepy import VideoClip
+from moviepy.editor import VideoClip
 import os
 
 # ==========================================
@@ -61,7 +61,49 @@ CONFIG = {
 }
 
 # ==========================================
-# 2. UTILS & ANIMATED VIDEO ENGINE
+# 2. DATA FETCHING (GSMARENA API)
+# ==========================================
+def fetch_data(q):
+    try:
+        # Step 1: Search for the device
+        s_res = requests.get(f"https://tkphsp2.vercel.app/gsm/search?q={q}", timeout=10).json()
+        if not s_res: return None
+        device_id = s_res[0]['id']
+        
+        # Step 2: Fetch detailed info and images
+        info = requests.get(f"https://tkphsp2.vercel.app/gsm/info/{device_id}", timeout=10).json()
+        imgs = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{device_id}", timeout=10).json()
+        
+        # Parse Chipset
+        chip = info.get("platform", {}).get("chipset", "High Performance").split('(')[0].strip()
+        
+        # Parse Battery (e.g., "5000 mAh")
+        raw_batt = info.get("battery", {}).get("battType", "5000")
+        batt_clean = raw_batt.split('mAh')[0].strip().split(' ')[-1] + " mAh"
+        
+        # Parse Memory (e.g., "128GB 8GB RAM")
+        mem_raw = info.get("memory", {}).get("internal", "Standard").split(',')[0].strip()
+        
+        # Image Selection
+        img_url = imgs.get('images', [])[1] if len(imgs.get('images', [])) > 1 else s_res[0]['image']
+        
+        return {
+            "name": s_res[0]['name'], 
+            "image_url": img_url, 
+            "specs": [
+                ("processor", chip),
+                ("screen", info.get("display", {}).get("size", "6.7\"").split(' ')[0] + " Display"),
+                ("camera", info.get("mainCamera", {}).get("mainModules", "50MP").split(',')[0]),
+                ("memory", mem_raw),
+                ("battery", batt_clean)
+            ]
+        }
+    except Exception as e:
+        st.error(f"API Error: {e}")
+        return None
+
+# ==========================================
+# 3. ENGINE & VIDEO GENERATION
 # ==========================================
 @st.cache_data
 def load_and_tint(url, color=None):
@@ -76,81 +118,51 @@ def load_and_tint(url, color=None):
         return img
     except: return Image.new("RGBA", (100, 100), (0,0,0,0))
 
-def make_video(engine, mode, data, price, name="temp_ad_video.mp4"):
-    duration = 5
-    
-    def get_frame(t):
-        # We build a unique frame for every timestamp 't' to allow for text animations
-        img = engine.build_ad(mode, data, price, time_offset=t)
-        img_rgb = img.convert("RGB")
-        w, h = img_rgb.size
-        
-        # Consistent 5% zoom
-        zoom = 1 + (0.05 * (t/duration))
-        nw, nh = int(w*zoom), int(h*zoom)
-        frame = img_rgb.resize((nw, nh), Image.Resampling.LANCZOS)
-        left, top = (nw - w) // 2, (nh - h) // 2
-        return np.array(frame.crop((left, top, left + w, top + h)))
-
-    clip = VideoClip(get_frame, duration=duration)
-    clip.write_videofile(name, fps=24, codec="libx264", audio=False, logger=None)
-    return name
-
-# ==========================================
-# 3. MASTER AD ENGINE
-# ==========================================
 class AdEngine:
-    def build_ad(self, mode, data, price, time_offset=None):
+    def build_ad(self, mode, data, price, t=None):
         cfg = CONFIG["layouts"][mode]
         canvas = Image.new("RGB", cfg["canvas"], CONFIG["colors"]["bg"])
         draw = ImageDraw.Draw(canvas)
 
-        # 1. Shadow & White Card for Phone
+        # 1. Phone Card Shadow & Box
         box = cfg["phone_box"]
-        for i in range(12): 
-            draw.rounded_rectangle([box[0]+i, box[1]+i, box[2]+i, box[3]+i], radius=25, fill=(0,0,0,25))
         draw.rounded_rectangle(box, radius=25, fill="white", outline=CONFIG["colors"]["gold"], width=5)
 
-        # 2. Phone Image
+        # 2. Paste Phone Image
         phone = load_and_tint(data["image_url"])
         phone.thumbnail((box[2]-box[0]-80, box[3]-box[1]-80), Image.Resampling.LANCZOS)
         px = box[0] + (box[2]-box[0]-phone.width)//2
         py = box[1] + (box[3]-box[1]-phone.height)//2
         canvas.paste(phone, (px, py), phone)
 
-        # 3. Logo & Title (Animation: Typewriter Effect)
+        # 3. Logo & Animated Title
         logo = load_and_tint(CONFIG["icons"]["logo"]).resize(cfg["logo_size"], Image.Resampling.LANCZOS)
         canvas.paste(logo, cfg["logo_pos"], logo)
         
-        anchor = "mm" if mode == "tiktok" else "la"
         full_title = data["name"].upper()
-        if time_offset is not None:
-            # Title finishes typing in 1.5 seconds
-            chars = int(len(full_title) * min(time_offset / 1.5, 1.0))
+        if t is not None:
+            chars = int(len(full_title) * min(t/1.5, 1.0)) # Type out in 1.5s
             display_title = full_title[:chars]
-        else:
-            display_title = full_title
+        else: display_title = full_title
             
+        anchor = "mm" if mode == "tiktok" else "la"
         draw.text(cfg["title_pos"], display_title, fill="white", font_size=55, anchor=anchor)
 
-        # 4. Specs (Animation: Progressive Staggered Entry)
+        # 4. Specs (Staggered Entry)
         sx, sy = cfg["spec_start"]
         for i, (icon_k, val) in enumerate(data["specs"]):
-            # Delay each spec by 0.3 seconds
-            if time_offset is not None and time_offset < (1.5 + i * 0.3):
-                continue
-                
+            if t is not None and t < (1.5 + i * 0.3): continue # Sequence Specs
             y = sy + (i * cfg["spec_gap"])
             icon = load_and_tint(CONFIG["icons"].get(icon_k), CONFIG["colors"]["white"]).resize((45, 45), Image.Resampling.LANCZOS)
             canvas.paste(icon, (sx, y), icon)
             draw.text((sx + 65, y + 5), val, fill="white", font_size=28)
 
-        # 5. Price Badge (Animation: Pop in at 3.5s)
-        if time_offset is None or time_offset > 3.5:
+        # 5. Price Badge (Pop-in at 3.5s)
+        if t is None or t > 3.5:
             draw.rounded_rectangle(cfg["price_box"], radius=15, fill=CONFIG["colors"]["mint"])
-            px = (cfg["price_box"][0] + cfg["price_box"][2]) // 2
-            py = (cfg["price_box"][1] + cfg["price_box"][3]) // 2
-            draw.text((px, py), f"KES {price}", fill="white", font_size=40, anchor="mm")
+            px_c = (cfg["price_box"][0] + cfg["price_box"][2]) // 2
+            py_c = (cfg["price_box"][1] + cfg["price_box"][3]) // 2
+            draw.text((px_c, py_c), f"KES {price}", fill="white", font_size=42, anchor="mm")
 
         # 6. Footer
         self.draw_footer(canvas, cfg["footer_y"])
@@ -171,72 +183,55 @@ class AdEngine:
             draw.text((ix + 45, y + 5), txt, fill="white", font_size=18)
 
 # ==========================================
-# 4. DATA FETCH & EXECUTION
+# 4. MAIN INTERFACE
 # ==========================================
-def fetch_data(q):
-    try:
-        s = requests.get(f"https://tkphsp2.vercel.app/gsm/search?q={q}").json()
-        if not s: return None
-        i = requests.get(f"https://tkphsp2.vercel.app/gsm/info/{s[0]['id']}").json()
-        m = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{s[0]['id']}").json()
-        
-        # Cleaned Hardware Data
-        chip = i.get("platform", {}).get("chipset", "Powerful Chip").split('(')[0].strip()
-        
-        # Fixed Battery extraction
-        raw_batt = i.get("battery", {}).get("battType", "5000 mAh")
-        batt_val = raw_batt.split('mAh')[0].strip().split(' ')[-1] + " mAh"
-        
-        # Fixed RAM/Storage extraction
-        mem_info = i.get("memory", {}).get("internal", "High Performance")
-        mem_val = mem_info.split(',')[0].strip()
-        
-        img = m.get('images', [])[1] if len(m.get('images', [])) > 1 else s[0]['image']
-        
-        return {"name": s[0]['name'], "image_url": img, "specs": [
-            ("processor", chip), 
-            ("screen", i.get("display", {}).get("size", "6.7\"")),
-            ("camera", i.get("mainCamera", {}).get("mainModules", "48MP").split(',')[0]),
-            ("memory", mem_val), 
-            ("battery", batt_val)
-        ]}
-    except: return None
+st.set_page_config(page_title="Triple K Generator", layout="centered")
+st.title("📱 Triple K: Ad Master")
 
-# MAIN UI (No sidebar)
-st.set_page_config(page_title="Triple K Ad Gen", layout="centered")
-st.title("Triple K: Master Ad Generator")
-
-c1, c2 = st.columns(2)
-with c1:
-    q = st.text_input("Model", "iPhone 15 Pro")
-    p = st.text_input("Price (KES)", "145,000")
-with c2:
-    m = st.selectbox("Format", ["whatsapp", "tiktok"])
+# Input Section
+colA, colB = st.columns(2)
+with colA:
+    query = st.text_input("Device Name", "iPhone 15 Pro Max")
+    price_val = st.text_input("Price (KES)", "175,000")
+with colB:
+    format_mode = st.selectbox("Social Format", ["whatsapp", "tiktok"])
 
 if st.button("Generate", use_container_width=True):
-    data = fetch_data(q)
-    if data:
+    device_data = fetch_data(query)
+    
+    if device_data:
         engine = AdEngine()
         
-        # 1. Image Flyer
-        st.subheader("Static Flyer")
-        final_img = engine.build_ad(m, data, p)
+        # Image Display
+        st.subheader("1. Static Flyer")
+        final_img = engine.build_ad(format_mode, device_data, price_val)
         st.image(final_img)
         
-        # Image Download
-        buf = BytesIO()
-        final_img.save(buf, format="PNG")
-        st.download_button("📥 Download Static Flyer", buf.getvalue(), f"flyer_{q}.png", "image/png")
+        # Download Image
+        img_io = BytesIO()
+        final_img.save(img_io, 'PNG')
+        st.download_button("📥 Download Flyer", img_io.getvalue(), f"{query}.png", "image/png")
         
         st.divider()
-        
-        # 2. Video Ad
-        st.subheader("Animated Video Ad")
-        with st.spinner("Rendering Video with Text Animations..."):
-            vid_path = make_video(engine, m, data, p)
-            st.video(vid_path)
+
+        # Video Rendering
+        st.subheader("2. Animated Video Ad")
+        with st.spinner("Processing High-Quality Video..."):
+            def make_frame(t):
+                # Build frame with time-based animations
+                frame_img = engine.build_ad(format_mode, device_data, price_val, t)
+                # Apply Zoom
+                w, h = frame_img.size
+                zoom = 1 + (0.05 * (t / 5))
+                frame_img = frame_img.resize((int(w*zoom), int(h*zoom)), Image.Resampling.LANCZOS)
+                # Center Crop
+                return np.array(frame_img.crop(((frame_img.width-w)//2, (frame_img.height-h)//2, (frame_img.width+w)//2, (frame_img.height+h)//2)))
+
+            clip = VideoClip(make_frame, duration=5)
+            clip.write_videofile("output.mp4", fps=24, codec="libx264", audio=False, logger=None)
+            st.video("output.mp4")
             
-            with open(vid_path, "rb") as f:
-                st.download_button("📥 Download MP4 Video", f.read(), f"video_{q}.mp4", "video/mp4")
+            with open("output.mp4", "rb") as f:
+                st.download_button("📥 Download Video", f.read(), f"{query}.mp4", "video/mp4")
     else:
-        st.error("Could not find data for that model.")
+        st.error("No data found for this model. Please check the spelling.")
