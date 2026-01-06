@@ -70,45 +70,69 @@ def load_asset(url, size=None):
         img = Image.open(BytesIO(res.content)).convert("RGBA")
         if size: img = img.resize(size, Image.Resampling.LANCZOS)
         return img
-    except: return Image.new("RGBA", (1, 1), (0,0,0,0))
+    except: return Image.new("RGBA", (1,1), (0,0,0,0))
 
 def fetch_device_data(query):
+    # Professional fallback data
     dummy = {
-        "name": query.upper(), "img_url": CONFIG["placeholder_phone"], 
-        "specs": [("processor", "Flagship Chip"), ("screen", "OLED Display"), ("memory", "128GB 8GB RAM"), ("battery", "5000 mAh")]
+        "name": query.upper(), 
+        "img_url": CONFIG["placeholder_phone"], 
+        "specs": [("processor", "Flagship Chip"), ("screen", "OLED Display"), ("memory", "High Speed"), ("battery", "Long Life")]
     }
     try:
-        # 1. Search
+        # 1. SEARCH: Get the base_id and official name
         search_res = requests.get(f"https://tkphsp2.vercel.app/gsm/search?q={query}", timeout=10).json()
         if not search_res: return dummy
         
-        base_id = search_res[0]['id']
+        base_id = search_res[0]['id'] # e.g., "xiaomi_poco_x3_pro-10802.php"
+        official_name = search_res[0]['name']
+
+        # 2. IMAGE ID TRANSFORMATION
+        # The API requires "-pictures-" inserted before the numeric ID
+        if "-" in base_id:
+            parts = base_id.rsplit('-', 1)
+            image_id = f"{parts[0]}-pictures-{parts[1]}"
+        else:
+            image_id = base_id
         
-        # 2. ID Transformation for Images (Insert '-pictures-')
-        id_parts = base_id.rsplit('-', 1)
-        image_id = f"{id_parts[0]}-pictures-{id_parts[1]}"
-        
-        # 3. Parallel Fetches
+        # 3. FETCH INFO & IMAGES
         info = requests.get(f"https://tkphsp2.vercel.app/gsm/info/{base_id}", timeout=10).json()
         imgs_data = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{image_id}", timeout=10).json()
         
-        # 4. Image Logic
+        # 4. IMAGE LOGIC: Priority to Lifestyle Shot (index 1)
         img_list = imgs_data.get('images', [])
         api_img = img_list[1] if len(img_list) > 1 else search_res[0].get('image', CONFIG["placeholder_phone"])
 
-        # 5. Clean Specs
-        chip = info.get("platform", {}).get("chipset", "Pro").split('(')[0].strip()
-        screen = info.get("display", {}).get("size", "6.7\"").split(',')[0].strip()
-        mem = info.get("memory", {}).get("internal", "128GB").split(',')[0].strip()
+        # 5. CLEAN SPECS (Mapped to your specific JSON structure)
+        # Chipset is inside 'platform'
+        chip = info.get("platform", {}).get("chipset", "High Performance").split('(')[0].strip()
+        
+        # Screen is inside 'display' -> 'size'
+        display_raw = info.get("display", {}).get("size", "6.7 inches")
+        screen = display_raw.split(',')[0].strip() # Clean "6.67 inches, 107 cm2..." to "6.67 inches"
+        
+        # Memory is inside 'memory' -> 'internal'
+        mem_raw = info.get("memory", {}).get("internal", "128GB 8GB RAM")
+        memory = mem_raw.split(',')[0].strip() # Takes the primary storage/RAM combo
+
+        # Battery is inside 'battery' -> 'battType'
         batt_raw = info.get("battery", {}).get("battType", "5000 mAh")
         batt_match = re.search(r'(\d+)\s*mAh', batt_raw)
         battery = f"{batt_match.group(1)} mAh" if batt_match else "5000 mAh"
 
         return {
-            "name": search_res[0]['name'], "img_url": api_img,
-            "specs": [("processor", chip), ("screen", screen), ("memory", mem), ("battery", battery)]
+            "name": official_name, 
+            "img_url": api_img,
+            "specs": [
+                ("processor", chip), 
+                ("screen", screen), 
+                ("memory", memory), 
+                ("battery", battery)
+            ]
         }
-    except: return dummy
+    except Exception as e:
+        # If any step fails, return the clean dummy data
+        return dummy
 
 # ==========================================
 # 3. MOTION GRAPHICS ENGINE
