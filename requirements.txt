@@ -9,3 +9,4 @@ torch
 groq
 pyperclip
 moviepy
+lxml
