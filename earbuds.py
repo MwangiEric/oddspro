@@ -1,147 +1,179 @@
 import streamlit as st
 import requests
-import numpy as np
 import re
 import io
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from datetime import datetime
+from PIL import Image, ImageDraw, ImageFont
 
 # ============================================================================
-# CONFIG & FONT ENGINE (HD ARIAL & VERDANA FALLBACK)
+# DATA CATEGORIES & PATTERNS
 # ============================================================================
-CONFIG = {
-    "fonts": {"primary": "arial.ttf", "fallback": "Verdana.ttf"},
-    "platforms": {
-        "POSTER": {"size": (1200, 1600), "type": "TALL"},
-        "STORY": {"size": (1080, 1920), "type": "TALL"},
-        "WIDE": {"size": (1200, 628), "type": "WIDE"}
+
+CATEGORIES = {
+    "Bluetooth Speakers": {
+        "sites": ["fgee.co.ke", "smartphoneskenya.co.ke"],
+        "patterns": {
+            "Price": r"(?:KShs?|Ksh)\s*([\d,]+)",
+            "Power": r"(\d+W\s*(?:RMS|Power)?)",
+            "Playtime": r"(\d+\s*(?:hrs?|hours?)\s*play(?:time)?)",
+            "BT Version": r"(?:Bluetooth|BT)\s*(?:Version)?\s*(\d+\.\d+)",
+            "Waterproof": r"(IPX[0-7]|Waterproof|Splashproof)"
+        }
+    },
+    "Earpods/Earbuds": {
+        "sites": ["smartphoneskenya.co.ke", "fgee.co.ke"],
+        "patterns": {
+            "Price": r"(?:KShs?|Ksh)\s*([\d,]+)",
+            "Total Playtime": r"(\d+\s*(?:hours?|hrs?)\s*(?:total|with\s*case))",
+            "Charging": r"(Type-C|Wireless Charging|Lightning)",
+            "Features": r"(ANC|Active Noise Cancelling|ENC|Transparency Mode)",
+            "BT Version": r"(?:Bluetooth|BT)\s*(\d+\.\d+)"
+        }
     }
 }
 
-def get_hd_font(size, bold=False):
-    """Ensures sharp vector text rendering"""
-    font_name = "arialbd.ttf" if bold else "arial.ttf"
-    try:
-        return ImageFont.truetype(font_name, size)
-    except:
-        try: return ImageFont.truetype("Verdana.ttf", size) # Your preferred fallback
-        except: return ImageFont.load_default()
-
 # ============================================================================
-# FEATURE 1 & 2: MARKET INTELLIGENCE & SPECS EXTRACTION
+# SEARCH ENGINE (Surgical Extraction)
 # ============================================================================
-def extract_marketing_insights(results):
-    """Extracts prices for comparison and units for spec sheets"""
-    prices = []
-    specs = []
-    
-    unit_patterns = [r"\d+\s?mAh", r"\d+\s?GB", r"\d+\.?\d*\s?inches", r"BT\s?\d\.\d"]
-    
-    for r in results:
-        text = f"{r.get('title', '')} {r.get('content', '')}"
-        # Extract Prices
-        found_prices = re.findall(r"(?:Ksh|KES)\s?([\d,]{3,})", text, re.I)
-        prices.extend([int(p.replace(',', '')) for p in found_prices])
-        # Extract Specs
-        for pat in unit_patterns:
-            match = re.search(pat, text, re.I)
-            if match: specs.append(match.group())
-            
-    return {
-        "min_price": min(prices) if prices else 0,
-        "max_price": max(prices) if prices else 0,
-        "quick_specs": list(set(specs))[:4]
-    }
 
-# ============================================================================
-# NUMPY COLOR DETECTION & GENERATOR
-# ============================================================================
-class MarketingGenerator:
-    def __init__(self, hd_image):
-        self.hd_image = hd_image.convert("RGBA")
-        self.theme_color = self.detect_color()
+class OraimoEngine:
+    def __init__(self):
+        self.session = requests.Session()
+        self.api_url = "https://far-paule-emw-a67bd497.koyeb.app/search"
 
-    def detect_color(self):
-        img = self.hd_image.copy()
-        img.thumbnail((100, 100))
-        data = np.array(img)
-        r, g, b, a = data.T
-        mask = (a > 100) & ~((r > 240) & (g > 240) & (b > 240)) # Ignore transparency/white
-        pixels = data[mask.T]
-        return tuple(np.mean(pixels[:, :3], axis=0).astype(int)) if len(pixels) > 0 else (70, 130, 180)
-
-    def generate(self, name, price, insights, platform_key):
-        cfg = CONFIG["platforms"][platform_key]
-        w, h = cfg["size"]
+    def surgical_search(self, model_query, category_name):
+        config = CATEGORIES[category_name]
+        all_products = []
         
-        # Create High-Res Canvas
-        canvas = Image.new('RGBA', (w, h), (255, 255, 255, 255))
+        # Search across specified high-quality sites
+        for site in config["sites"]:
+            full_query = f"site:{site} Oraimo {model_query}"
+            params = {"q": full_query, "categories": "general", "format": "json"}
+            
+            try:
+                resp = self.session.get(self.api_url, params=params, timeout=20)
+                results = resp.json().get("results", [])
+                
+                for r in results:
+                    snippet = r.get('content', '')
+                    title = r.get('title', '')
+                    
+                    # 1. Extract Name
+                    official_name = title.split('|')[0].split('-')[0].strip()
+                    
+                    # 2. Extract Data using Category Regex
+                    extracted_specs = []
+                    price = "Ksh 0"
+                    
+                    for key, pattern in config["patterns"].items():
+                        match = re.search(pattern, snippet, re.IGNORECASE)
+                        if match:
+                            val = match.group(0 if key != "Price" else 1)
+                            if key == "Price":
+                                price = f"Ksh {int(val.replace(',', '')):,}"
+                            else:
+                                extracted_specs.append(val.strip().upper())
+                    
+                    # Only add if we found at least a price or some specs
+                    if len(extracted_specs) > 0 or price != "Ksh 0":
+                        all_products.append({
+                            "name": official_name,
+                            "price": price,
+                            "features": extracted_specs[:4], # Top 4 specs for poster
+                            "site": site
+                        })
+            except Exception as e:
+                continue
+                
+        return all_products
+
+# ============================================================================
+# POSTER DESIGNER (Story Format 1080x1920)
+# ============================================================================
+
+class PosterDesigner:
+    def create(self, product, img_obj):
+        # Canvas & Background
+        canvas = Image.new('RGBA', (1080, 1920), (255, 255, 255, 255))
         draw = ImageDraw.Draw(canvas)
         
-        # Soft Gradient Background
-        for i in range(h):
-            alpha = int(35 * (i / h))
-            draw.line([(0, i), (w, i)], fill=(*self.theme_color, alpha))
+        # Fonts
+        try:
+            f_title = ImageFont.truetype("poppins.ttf", 85)
+            f_price = ImageFont.truetype("poppins.ttf", 70)
+            f_feat = ImageFont.truetype("poppins.ttf", 40)
+            f_cta = ImageFont.truetype("poppins.ttf", 45)
+        except:
+            f_title = f_price = f_feat = f_cta = ImageFont.load_default()
 
-        # Layout Logic
-        if cfg["type"] == "WIDE":
-            # Image on left, Info on right
-            prod = self.hd_image.copy()
-            prod.thumbnail((w//2, h-100), Image.Resampling.LANCZOS)
-            canvas.paste(prod, (50, (h-prod.size[1])//2), prod)
-            
-            draw.text((w//2 + 20, 150), name.upper(), font=get_hd_font(50, True), fill=(40,40,40))
-            draw.text((w//2 + 20, 240), f"Ksh {price:,}", font=get_hd_font(70, True), fill=self.theme_color)
-        else:
-            # Vertical Stack
-            prod = self.hd_image.copy()
-            prod.thumbnail((w-200, h//2), Image.Resampling.LANCZOS)
-            canvas.paste(prod, ((w-prod.size[0])//2, 250), prod)
-            
-            draw.text((w//2, h-450), name.upper(), font=get_hd_font(80, True), fill=(40,40,40), anchor="mm")
-            draw.text((w//2, h-320), f"Ksh {price:,}", font=get_hd_font(90, True), fill=self.theme_color, anchor="mm")
-            
-            # Add Spec Badges
-            for i, spec in enumerate(insights['quick_specs']):
-                draw.text((w//2, h-220 + (i*40)), f"• {spec}", font=get_hd_font(30), fill=(100,100,100), anchor="mm")
+        # Product Image (Resized to 900x900 area)
+        img_obj.thumbnail((900, 900), Image.Resampling.LANCZOS)
+        canvas.paste(img_obj, ((1080 - img_obj.width)//2, 380), img_obj)
+
+        # Content
+        draw.text((540, 200), product['name'].upper(), font=f_title, fill=(0,0,0), anchor="mm")
+        draw.text((540, 320), product['price'], font=f_price, fill=(0, 180, 0), anchor="mm")
+
+        # Vertical Features
+        y = 1350
+        for feat in product['features']:
+            draw.text((540, y), f"✓ {feat}", font=f_feat, fill=(50, 50, 50), anchor="mm")
+            y += 75
+
+        # Footer CTA
+        draw.rectangle([200, 1700, 880, 1830], fill=(0, 0, 0))
+        draw.text((540, 1765), "ORDER NOW @ ORAIMO", font=f_cta, fill=(255, 255, 255), anchor="mm")
 
         return canvas
 
 # ============================================================================
-# STREAMLIT UI: PREVIEW GALLERY
+# UI LOGIC
 # ============================================================================
-st.set_page_config(layout="wide")
-st.title("🎨 Universal Marketing Suite")
 
-# Step 1: Search (Mock logic for brevity)
-query = st.text_input("Product Name", "Sony WH-1000XM5")
-if st.button("🔍 Analyze & Search"):
-    # Imagine this fetches from your API
-    st.session_state.results = [{"content": "Sony XM5 Ksh 45,000, BT 5.2, 30h battery", "url": "...", "thumbnail_src": "..."}]
-    st.session_state.hd_url = "https://example.com/hd_sony.png" # Selected from thumbnails
+st.set_page_config(page_title="Oraimo Designer", layout="wide")
 
-# Step 2: Multi-Platform Preview
-if 'hd_url' in st.session_state:
-    insights = extract_marketing_insights(st.session_state.results)
-    
-    # HD Download & Process
-    raw_img = Image.open(requests.get(st.session_state.hd_url, stream=True).raw)
-    engine = MarketingGenerator(raw_img)
-    
-    st.subheader("🖼️ Live Multi-Platform Preview")
-    c1, c2, c3 = st.columns(3)
-    
-    with c1:
-        st.caption("Professional Poster")
-        st.image(engine.generate(query, 45000, insights, "POSTER"))
-        
-    with c2:
-        st.caption("Instagram Story")
-        st.image(engine.generate(query, 45000, insights, "STORY"))
-        
-    with c3:
-        st.caption("E-commerce Wide")
-        st.image(engine.generate(query, 45000, insights, "WIDE"))
+# Sidebar for Category selection
+with st.sidebar:
+    st.header("Settings")
+    cat_choice = st.selectbox("Select Category", list(CATEGORIES.keys()))
 
-    # Feature 1: Market Intelligence Display
-    st.info(f"📊 **Market Analysis:** Found prices ranging from Ksh {insights['min_price']:,} to Ksh {insights['max_price']:,}")
+# Tab Logic
+t1, t2, t3 = st.tabs(["Search", "Select Image", "Download"])
+
+with t1:
+    model = st.text_input(f"Model Name (in {cat_choice})", "FreePods 4")
+    if st.button("Search Targeted Sites"):
+        engine = OraimoEngine()
+        st.session_state.prods = engine.surgical_search(model, cat_choice)
+
+    if 'prods' in st.session_state:
+        for idx, p in enumerate(st.session_state.prods):
+            c1, c2 = st.columns([4, 1])
+            c1.info(f"**{p['name']}** from {p['site']} | {p['price']}")
+            if c2.button("Use Info", key=f"sel_{idx}"):
+                st.session_state.sel = p
+                # Image search using the official name
+                params = {"q": f'"{p["name"]}" product transparent png 900x900', "categories": "images", "format": "json"}
+                resp = requests.get("https://far-paule-emw-a67bd497.koyeb.app/search", params=params)
+                st.session_state.imgs = [i for i in resp.json().get("results", []) if "900" in i.get('resolution', '')]
+                st.rerun()
+
+# 
+
+with t2:
+    if 'sel' in st.session_state:
+        st.write(f"### High-Res Images for {st.session_state.sel['name']}")
+        cols = st.columns(3)
+        for idx, im in enumerate(st.session_state.imgs[:9]):
+            with cols[idx % 3]:
+                st.image(im['img_src'], use_container_width=True)
+                if st.button("Generate Poster", key=f"gen_{idx}"):
+                    raw = Image.open(io.BytesIO(requests.get(im['img_src']).content)).convert("RGBA")
+                    st.session_state.final = PosterDesigner().create(st.session_state.sel, raw)
+                    st.success("Poster Created!")
+
+with t3:
+    if 'final' in st.session_state:
+        st.image(st.session_state.final)
+        b = io.BytesIO()
+        st.session_state.final.save(b, format="PNG")
+        st.download_button("Download Story", b.getvalue(), "poster.png")
