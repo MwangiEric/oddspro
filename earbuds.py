@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+from bs4 import BeautifulSoup
 import re
 import io
 from PIL import Image, ImageDraw, ImageFont
@@ -7,142 +8,131 @@ from PIL import Image, ImageDraw, ImageFont
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-
 CONFIG = {
-    "scraper_url": "https://www.priceinkenya.com/price-list/bluetooth-speakers",
+    "url": "https://www.priceinkenya.com/price-list/bluetooth-speakers",
     "search_api": "https://far-paule-emw-a67bd497.koyeb.app/search",
-    "poster_size": (1080, 1920),
-    "font_file": "poppins.ttf" 
+    "font_file": "poppins.ttf", # Your secondary fallback font
+    "poster_size": (1080, 1920)
 }
 
 # ============================================================================
-# REFINED SCRAPER
+# SURGICAL HTML SCRAPER
 # ============================================================================
-
-def get_live_price_list():
-    """Parses the specific table structure from PriceInKenya"""
+def get_live_inventory():
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(CONFIG["scraper_url"], headers=headers, timeout=15)
+        response = requests.get(CONFIG["url"], headers=headers, timeout=15)
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        # We look for the pattern: Name with comma -> Price -> Date
-        # Based on your sample: "Anker Soundcore Pyro Mini, Bluetooth Speaker 4,000 August, 2024"
-        raw_text = response.text
-        
-        # Regex to find: Name (before comma), Full Description, and Price
-        # This targets the table rows specifically
-        pattern = r"([^,\n]+),\s*([^0-9\n]+)\s+([\d,]+)"
-        matches = re.findall(pattern, raw_text)
+        # Target the specific table body from your HTML
+        table_body = soup.find('tbody', class_='bg-white divide-y divide-gray-100')
+        rows = table_body.find_all('tr') if table_body else []
         
         products = []
-        for match in matches:
-            official_name = match[0].strip() # Text before comma
-            description = match[1].strip()   # Text after comma
-            price = match[2].strip()        # Numeric price
-            
-            products.append({
-                "name": official_name,
-                "full_desc": f"{official_name}, {description}",
-                "price": f"Ksh {price}",
-                "search_query": official_name 
-            })
+        for row in rows:
+            cells = row.find_all('td')
+            if len(cells) >= 2:
+                # 1. Name: Extract text and split at the first comma
+                full_name = cells[0].get_text(strip=True)
+                clean_name = full_name.split(',')[0].strip()
+                
+                # 2. Price: Extract numeric digits only
+                price_text = cells[1].get_text(strip=True)
+                price_clean = re.sub(r'[^\d]', '', price_text)
+                
+                if clean_name and price_clean:
+                    products.append({
+                        "name": clean_name,
+                        "price": f"Ksh {int(price_clean):,}",
+                        "search_term": clean_name
+                    })
         return products
     except Exception as e:
-        st.error(f"Scrape failed: {e}")
+        st.error(f"Scraper Error: {e}")
         return []
 
 # ============================================================================
 # POSTER DESIGNER (1080x1920)
 # ============================================================================
-
-class PosterDesigner:
+class OraimoDesigner:
     def create(self, product, img_obj):
+        # Create Canvas
         canvas = Image.new('RGBA', CONFIG["poster_size"], (255, 255, 255, 255))
         draw = ImageDraw.Draw(canvas)
         
+        # Load Fonts
         try:
-            f_name = ImageFont.truetype(CONFIG["font_file"], 95)
-            f_price = ImageFont.truetype(CONFIG["font_file"], 80)
-            f_cta = ImageFont.truetype(CONFIG["font_file"], 50)
+            f_title = ImageFont.truetype(CONFIG["font_file"], 95)
+            f_price = ImageFont.truetype(CONFIG["font_file"], 85)
+            f_cta = ImageFont.truetype(CONFIG["font_file"], 55)
         except:
-            f_name = f_price = f_cta = ImageFont.load_default()
+            f_title = f_price = f_cta = ImageFont.load_default()
 
-        # Image Scaling: Ensure it occupies the 900x900 center area
+        # Scale & Paste Image (Targeting 900x900 area)
         img_obj.thumbnail((900, 900), Image.Resampling.LANCZOS)
-        canvas.paste(img_obj, ((1080 - img_obj.width)//2, 400), img_obj)
+        canvas.paste(img_obj, ((1080 - img_obj.width)//2, 450), img_obj)
 
-        # Text Elements
-        draw.text((540, 200), product['name'].upper(), font=f_name, fill=(0,0,0), anchor="mm")
-        draw.text((540, 320), product['price'], font=f_price, fill=(0, 180, 0), anchor="mm")
+        # Draw Text
+        draw.text((540, 250), product['name'].upper(), font=f_title, fill=(0,0,0), anchor="mm")
+        draw.text((540, 380), product['price'], font=f_price, fill=(0, 180, 0), anchor="mm")
 
         # CTA Button
-        draw.rectangle([200, 1720, 880, 1840], fill=(0, 0, 0))
-        draw.text((540, 1770), "SHOP NOW @ ORAIMO", font=f_cta, fill=(255, 255, 255), anchor="mm")
+        draw.rectangle([180, 1700, 900, 1850], fill=(0, 0, 0))
+        draw.text((540, 1775), "ORDER NOW @ ORAIMO", font=f_cta, fill=(255, 255, 255), anchor="mm")
 
         return canvas
 
 # ============================================================================
-# UI LOGIC
+# STREAMLIT UI
 # ============================================================================
+st.set_page_config(page_title="Oraimo Poster Lab", layout="wide")
 
-st.set_page_config(page_title="Oraimo Designer Pro", layout="wide")
-
-if 'scraped_data' not in st.session_state: st.session_state.scraped_data = []
-if 'selected_prod' not in st.session_state: st.session_state.selected_prod = None
-if 'image_options' not in st.session_state: st.session_state.image_options = []
+if 'items' not in st.session_state: st.session_state.items = []
+if 'img_results' not in st.session_state: st.session_state.img_results = []
 if 'final_poster' not in st.session_state: st.session_state.final_poster = None
 
 st.title("📱 Social Media Poster Generator")
 
-t1, t2, t3 = st.tabs(["1. Market Prices", "2. Pick Image", "3. Export"])
+t1, t2, t3 = st.tabs(["1. Market List", "2. Select Visual", "3. Export"])
 
 with t1:
-    if st.button("Refresh Price List"):
-        st.session_state.scraped_data = get_live_price_list()
+    if st.button("Sync with Live Site"):
+        st.session_state.items = get_live_inventory()
     
-    if st.session_state.scraped_data:
-        # Display as a clean selection list
-        for idx, item in enumerate(st.session_state.scraped_data):
-            col1, col2 = st.columns([5, 1])
-            col1.info(f"**{item['name']}** | {item['price']}")
-            
-            if col2.button("Select", key=f"prod_{idx}"):
-                st.session_state.selected_prod = item
-                # Surgical image search using the name before the comma
-                query = f'"{item["name"]}" product transparent background png'
-                resp = requests.get(CONFIG["search_api"], params={"q": query, "categories": "images", "format": "json"})
-                
-                # Filter for 900x900 resolution
-                st.session_state.image_options = [
-                    img for img in resp.json().get("results", []) 
-                    if "900" in img.get('resolution', '0')
-                ]
-                st.rerun()
+    # Filter for brand
+    brand_filter = st.text_input("Filter results (e.g., JBL, Anker)", "")
+    
+    display_list = [i for i in st.session_state.items if brand_filter.lower() in i['name'].lower()]
+    
+    for idx, item in enumerate(display_list):
+        c1, c2 = st.columns([5, 1])
+        c1.info(f"**{item['name']}** — {item['price']}")
+        if c2.button("Select", key=f"sel_{idx}"):
+            st.session_state.active_prod = item
+            # Use SearXNG to find high-res PNG
+            q = f'"{item["name"]}" product transparent background png'
+            resp = requests.get(CONFIG["search_api"], params={"q": q, "categories": "images", "format": "json"})
+            # Check for 900 in resolution for crispness
+            st.session_state.img_results = [r for r in resp.json().get("results", []) if "900" in r.get('resolution', '0')]
+            st.rerun()
 
 with t2:
-    if st.session_state.selected_prod:
-        st.write(f"### Select transparent image for {st.session_state.selected_prod['name']}")
-        
-        if not st.session_state.image_options:
-            st.warning("No high-res transparent images found. Try selecting another product.")
-        else:
-            # Grid of images (3 columns)
-            cols = st.columns(3)
-            for i, img_data in enumerate(st.session_state.image_options[:9]):
-                with cols[i % 3]:
-                    st.image(img_data['img_src'], use_container_width=True)
-                    st.caption(f"Res: {img_data['resolution']}")
-                    if st.button("Use This Image", key=f"img_btn_{i}"):
-                        img_bytes = requests.get(img_data['img_src']).content
-                        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
-                        st.session_state.final_poster = PosterDesigner().create(st.session_state.selected_prod, pil_img)
-                        st.success("Poster Designed!")
-    else:
-        st.info("Pick a product from the 'Market Prices' tab first.")
+    if 'active_prod' in st.session_state:
+        st.write(f"### Visuals for {st.session_state.active_prod['name']}")
+        cols = st.columns(3)
+        for i, img in enumerate(st.session_state.img_results[:9]):
+            with cols[i % 3]:
+                st.image(img['img_src'], use_container_width=True)
+                if st.button("Generate Poster", key=f"img_btn_{i}"):
+                    raw = requests.get(img['img_src']).content
+                    pil_img = Image.open(io.BytesIO(raw)).convert("RGBA")
+                    st.session_state.final_poster = OraimoDesigner().create(st.session_state.active_prod, pil_img)
+                    st.success("Design Created!")
+    else: st.info("Go to Tab 1 and sync/select an item.")
 
 with t3:
     if st.session_state.final_poster:
         st.image(st.session_state.final_poster)
         buf = io.BytesIO()
         st.session_state.final_poster.save(buf, format="PNG")
-        st.download_button("Download Story Poster", buf.getvalue(), "poster.png")
+        st.download_button("Download for Instagram/WhatsApp", buf.getvalue(), "oraimo_poster.png")
