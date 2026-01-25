@@ -1,133 +1,137 @@
 import streamlit as st
-import pandas as pd
 import requests
-import io
-import re
-import random
-import numpy as np
-import concurrent.futures
-from PIL import Image, ImageDraw, ImageFont
-from moviepy import VideoClip
+from PIL import Image, ImageFont, ImageDraw
+from io import BytesIO
 
 # ============================================================================
-# 1. OPTIMIZED RESOURCE MANAGEMENT (Singleton Pattern)
+# CONFIGURATION
 # ============================================================================
-@st.cache_resource
-def get_font_bundle():
-    """Load fonts once into RAM. Eliminates 300ms delay per render."""
-    try:
-        return {
-            "title": ImageFont.truetype("poppins.ttf", 110),
-            "tagline": ImageFont.truetype("poppins.ttf", 45),
-            "spec": ImageFont.truetype("poppins.ttf", 34),
-            "price": ImageFont.truetype("poppins.ttf", 100)
-        }
-    except:
-        return {k: ImageFont.load_default() for k in ["title", "tagline", "spec", "price"]}
+API_URL = "https://moon-shine.vercel.app"
+DEFAULT_JERSEY = "https://i.imgur.com/8fS73O4.png"  # Fallback blank template
 
-@st.cache_data(ttl=3600)
-def fetch_and_resize_asset(url, max_dim=900):
-    """Downloads & resizes immediately to save RAM (Optimization #3)."""
+st.set_page_config(page_title="Moonshine Jersey Studio", layout="wide")
+
+# Initialize session state for picking and storing assets
+if "search_results" not in st.session_state:
+    st.session_state.search_results = []
+if "selected_design_url" not in st.session_state:
+    st.session_state.selected_design_url = None
+
+def get_pil_image(url):
+    """Utility to fetch and convert online images to PIL RGBA."""
     try:
-        resp = requests.get(url, timeout=5)
-        img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
-        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-        return img
-    except:
+        resp = requests.get(url, timeout=10)
+        return Image.open(BytesIO(resp.content)).convert("RGBA")
+    except Exception as e:
+        st.error(f"Error fetching image: {e}")
         return None
 
 # ============================================================================
-# 2. PARALLEL ASSET FETCHING (Optimization #4)
+# APP LAYOUT
 # ============================================================================
-def get_all_icons_parallel(icon_urls):
-    """Halves initial load time by fetching all icons at once."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        return list(executor.map(fetch_and_resize_asset, icon_urls))
+st.sidebar.title("🎨 Moonshine Studio")
+st.sidebar.info("Jersey & Streetwear Customizer v3.2.0")
 
-# ============================================================================
-# 3. LAYERED ENGINE (Optimization #7 - Recipe over Meal)
-# ============================================================================
-def render_static_layers(recipe):
-    """
-    Takes a 'Recipe' (Strings/URLs) and cooks it into layers.
-    Prevents bloated session state.
-    """
-    fonts = get_font_bundle()
-    theme_color = recipe['color']
-    
-    # Base Layer
-    base = Image.new('RGBA', (1080, 1920), (255, 255, 255, 255))
-    draw = ImageDraw.Draw(base)
-    
-    # Dynamic Styles
-    if recipe['style'] == "TECH":
-        for i in range(0, 1080, 100): draw.line([(i, 0), (i, 1920)], fill=theme_color+(20,), width=1)
-    elif recipe['style'] == "LUXURY":
-        draw.ellipse([100, 400, 980, 1600], fill=theme_color+(15,))
+tab1, tab2 = st.tabs(["🔍 1. Pick Style", "👕 2. Jersey Canvas"])
 
-    # Text Rendering
-    draw.text((540, 180), recipe['tagline'], font=fonts['tagline'], fill=theme_color, anchor="mm")
-    draw.text((540, 310), recipe['name'].upper(), font=fonts['title'], fill=(30, 30, 30), anchor="mm")
+# ----------------------------------------------------------------------------
+# TAB 1: ASSET DISCOVERY (Thumbnail Picks)
+# ----------------------------------------------------------------------------
+with tab1:
+    st.header("Search Graffiti & Calligraphy")
+    c1, c2 = st.columns([3, 1])
     
-    return base
+    with c1:
+        query = st.text_input("Design Theme", "Calligraphy graffiti tag")
+    with c2:
+        category = st.selectbox("Category", ["graffiti", "typography", "all", "vectors"])
 
-# ============================================================================
-# 4. NUMPY VIDEO (15 FPS - Optimization #2)
-# ============================================================================
-def generate_frame(t, base, product, price_layer):
-    """Uses NumPy for direct pixel manipulation."""
-    frame = base.copy()
-    
-    # Zoom Product
-    scale = 1.0 + (0.12 * (t / 6))
-    w, h = product.size
-    p_zoom = product.resize((int(w*scale), int(h*scale)), Image.Resampling.LANCZOS)
-    frame.paste(p_zoom, ((1080-p_zoom.width)//2, (1000-p_zoom.height)//2), p_zoom)
-    
-    # Slide Price
-    if t > 1.0:
-        offset = int(100 * (1 - min(1.0, (t-1.0)/1.5)))
-        frame.paste(price_layer, (0, -offset), price_layer)
+    if st.button("🔎 Find Styles", type="primary", use_container_width=True):
+        with st.spinner("Searching moon-shine.vercel.app..."):
+            # Using your API parameters
+            params = {"q": query, "c": category, "e": "png", "w": 600, "h": 600, "limit": 20}
+            try:
+                resp = requests.get(f"{API_URL}/api/search", params=params)
+                st.session_state.search_results = resp.json().get("assets", [])
+            except:
+                st.error("API is currently offline.")
+
+    # Showing thumbnails for the user to pick
+    if st.session_state.search_results:
+        st.divider()
+        cols = st.columns(4)
+        for idx, asset in enumerate(st.session_state.search_results):
+            with cols[idx % 4]:
+                # Show thumbnail
+                st.image(asset.get("thumb", asset["img"]), use_container_width=True)
+                # Selection logic: Store the high-res URL when clicked
+                if st.button("Select Design", key=f"btn_{idx}", use_container_width=True):
+                    st.session_state.selected_design_url = asset["img"]
+                    st.toast("🔥 High-res style loaded to canvas!")
+
+# ----------------------------------------------------------------------------
+# TAB 2: JERSEY CANVAS (PIL Drawing)
+# ----------------------------------------------------------------------------
+with tab2:
+    if not st.session_state.selected_design_url:
+        st.warning("⚠️ Please select a style from Step 1 first.")
+    else:
+        col_ctrl, col_view = st.columns([1, 2])
         
-    return np.array(frame)
+        with col_ctrl:
+            st.subheader("Jersey Setup")
+            jersey_club = st.selectbox("Premier League Base", [
+                "Arsenal 25/26 home jersey", 
+                "Chelsea 25/26 home kit", 
+                "Man City sky blue jersey", 
+                "Liverpool red football kit",
+                "Man United red kit mockup"
+            ])
+            
+            st.divider()
+            name = st.text_input("Player Name", "MOONSHINE")
+            num = st.text_input("Number", "26")
+            p_color = st.color_picker("Print Color", "#FFD700")
 
-# ============================================================================
-# 5. STREAMLIT APP LOGIC
-# ============================================================================
-st.title("⚡ Ultra-Fast Poster Gen")
+            # Canvas Controls
+            scale = st.slider("Design Scale", 0.1, 1.0, 0.45)
+            y_pos = st.slider("Chest Position", 100, 1000, 380)
+            
+            render_btn = st.button("🎯 Render Final Print", type="primary", use_container_width=True)
 
-# 1. Store only 'Recipe' in session to keep it lightweight
-if 'recipe' not in st.session_state:
-    st.session_state.recipe = {
-        "name": "Product Name",
-        "tagline": "Innovation Today",
-        "style": "TECH",
-        "color": (40, 120, 250)
-    }
+        with col_view:
+            if render_btn:
+                with st.spinner("Baking High-Res Jersey..."):
+                    # 1. Fetch Jersey Base from API
+                    j_resp = requests.get(f"{API_URL}/api/search", params={"q": jersey_club, "limit": 1})
+                    j_assets = j_resp.json().get("assets")
+                    j_url = j_assets[0]["img"] if j_assets else DEFAULT_JERSEY
+                    
+                    # 2. Open Layers
+                    canvas = get_pil_image(j_url).resize((1200, 1500))
+                    design = get_pil_image(st.session_state.selected_design_url)
+                    
+                    # 3. Scale and Draw Design
+                    dw = int(canvas.width * scale)
+                    dh = int(dw * (design.height / design.width))
+                    design = design.resize((dw, dh), Image.Resampling.LANCZOS)
+                    
+                    # Composite layers
+                    canvas.alpha_composite(design, ((canvas.width - dw)//2, y_pos))
+                    
+                    # 4. Add Custom Text
+                    draw = ImageDraw.Draw(canvas)
+                    try:
+                        # Draw Name (Top)
+                        draw.text((600, y_pos - 80), name, fill=p_color, anchor="mm")
+                        # Draw Number (Bottom)
+                        draw.text((600, y_pos + dh + 70), num, fill=p_color, anchor="mm")
+                    except:
+                        pass # Fallback if text drawing fails
 
-# 2. Parallel Icon Loading Check
-icon_list = ["https://www.svgrepo.com/download/3066/battery.png?height=64", 
-             "https://www.svgrepo.com/download/437230/memory.png?height=64"]
-
-if st.button("🚀 Rapid Asset Load"):
-    with st.spinner("Downloading Parallelly..."):
-        icons = get_all_icons_parallel(icon_list)
-        st.success(f"Loaded {len([i for i in icons if i])} icons instantly.")
-
-# 3. Video Logic (No Temp Files)
-if st.button("🎬 Render Promo (In-Memory)"):
-    # Generate layers only when needed
-    fonts = get_font_bundle()
-    base = render_static_layers(st.session_state.recipe)
-    
-    # Assuming product exists...
-    dummy_prod = Image.new('RGBA', (500, 500), (0,0,0,100)) 
-    dummy_price = Image.new('RGBA', (1080, 1920), (0,0,0,0))
-    
-    with st.spinner("Compiling NumPy Frames..."):
-        clip = VideoClip(lambda t: generate_frame(t, base, dummy_prod, dummy_price), duration=6)
-        # Using /tmp/ as a memory-mapped shortcut for Vercel/Streamlit
-        clip.write_videofile("/tmp/video.mp4", fps=15, codec="libx264", audio=False, preset="ultrafast")
-        
-        with open("/tmp/video.mp4", "rb") as f:
-            st.video(f.read())
+                    st.image(canvas, caption=f"Custom {jersey_club} Preview", use_container_width=True)
+                    
+                    # 5. Export
+                    buf = BytesIO()
+                    canvas.save(buf, format="PNG")
+                    st.download_button("📥 Download Design", buf.getvalue(), "jersey_final.png", "image/png", use_container_width=True)
