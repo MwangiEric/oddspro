@@ -7,7 +7,7 @@ import random
 import numpy as np
 import concurrent.futures
 from PIL import Image, ImageDraw, ImageFont
-from moviepy.editor import VideoClip
+from moviepy import VideoClip
 
 # ============================================================================
 # 1. OPTIMIZED RESOURCE MANAGEMENT (Singleton Pattern)
