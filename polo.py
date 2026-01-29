@@ -1,7 +1,6 @@
 
-# Create the Streamlit transformer app
-streamlit_code = '''
-import streamlit as st
+# Create the complete single-file Streamlit app
+streamlit_code = '''import streamlit as st
 import json
 import base64
 import requests
@@ -27,9 +26,8 @@ def load_image_from_source(src):
         return None
     
     try:
-        # Check if base64
+        # Check if base64 data URI
         if src.startswith('data:image'):
-            # Extract base64 data
             base64_data = src.split(',')[1]
             img_data = base64.b64decode(base64_data)
             return Image.open(BytesIO(img_data)).convert('RGBA')
@@ -373,9 +371,15 @@ if st.session_state.original_json:
 '''
 
 # Save to file
-with open('/mnt/kimi/output/polotno_transformer.py', 'w') as f:
+output_path = '/mnt/kimi/output/polotno_transformer_app.py'
+with open(output_path, 'w') as f:
     f.write(streamlit_code)
 
-print("✅ Streamlit app saved to: /mnt/kimi/output/polotno_transformer.py")
-print("\nTo run:")
-print("  streamlit run /mnt/kimi/output/polotno_transformer.py")
+print(f"✅ Single-file Streamlit app saved to: {output_path}")
+print(f"\n📦 File size: {len(streamlit_code)} characters")
+print("\n🚀 To deploy to Streamlit Cloud:")
+print("   1. Upload this file to GitHub")
+print("   2. Connect repo to streamlit.io")
+print("   3. Set main file path: polotno_transformer_app.py")
+print("\n💻 To run locally:")
+print(f"   streamlit run {output_path}")
