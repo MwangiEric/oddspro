@@ -1,6 +1,4 @@
-
-# Create the complete single-file Streamlit app
-streamlit_code = '''import streamlit as st
+import streamlit as st
 import json
 import base64
 import requests
@@ -368,18 +366,3 @@ if st.session_state.original_json:
     
     with st.expander("🔍 Debug: Transformed Schema"):
         st.json(st.session_state.schema)
-'''
-
-# Save to file
-output_path = '/mnt/kimi/output/polotno_transformer_app.py'
-with open(output_path, 'w') as f:
-    f.write(streamlit_code)
-
-print(f"✅ Single-file Streamlit app saved to: {output_path}")
-print(f"\n📦 File size: {len(streamlit_code)} characters")
-print("\n🚀 To deploy to Streamlit Cloud:")
-print("   1. Upload this file to GitHub")
-print("   2. Connect repo to streamlit.io")
-print("   3. Set main file path: polotno_transformer_app.py")
-print("\n💻 To run locally:")
-print(f"   streamlit run {output_path}")
