@@ -3,9 +3,10 @@ import streamlit as st
 import json
 import requests
 import base64
+import re
+import math
 from PIL import Image, ImageDraw, ImageFont, ImageColor, ImageFilter
 from io import BytesIO
-import math
 import os
 from datetime import datetime
 
@@ -25,7 +26,7 @@ defaults = {
     'original_json': None,
     'working_json': None,
     'rendered_image': None,
-    'product_name': "TRIPPLE K",
+    'product_name': "SAMSUNG S25",
     'product_image_url': "",
     'price': "99,999",
     'background_url': "",
@@ -42,28 +43,18 @@ for k, v in defaults.items():
 # ───────────────────────────────────────────────
 
 def parse_dimension(val, default=0):
-    """
-    Safely parse dimension values that could be:
-    - Numbers (int/float)
-    - Strings ("auto", "100%", "1080")
-    - None
-    """
+    """Safely parse dimension values"""
     if val is None:
         return default
-    
-    # Handle strings
     if isinstance(val, str):
         val = val.strip().lower()
         if val in ('auto', '', 'none', 'null', 'undefined'):
             return default
-        # Remove percentage or px suffix
         val = val.replace('%', '').replace('px', '').strip()
         try:
             return float(val)
         except ValueError:
             return default
-    
-    # Handle numbers
     try:
         return float(val)
     except (TypeError, ValueError):
@@ -72,7 +63,6 @@ def parse_dimension(val, default=0):
 def safe_int(val, default=0):
     """Convert to int with safety checks"""
     dim = parse_dimension(val, default)
-    # Ensure non-negative
     return max(0, int(dim))
 
 def safe_float(val, default=0.0):
@@ -81,32 +71,103 @@ def safe_float(val, default=0.0):
     return float(dim)
 
 # ───────────────────────────────────────────────
+# Color Handling
+# ───────────────────────────────────────────────
+
+def parse_color(color_str, default=(0, 0, 0, 255)):
+    """Parse color to RGBA tuple"""
+    if not color_str or color_str == 'transparent':
+        return (0, 0, 0, 0)
+    try:
+        # Handle rgba(r,g,b,a) format
+        if isinstance(color_str, str) and 'rgba' in color_str:
+            nums = re.findall(r"[\d.]+", color_str)
+            if len(nums) >= 3:
+                r = int(float(nums[0]))
+                g = int(float(nums[1]))
+                b = int(float(nums[2]))
+                a = int(float(nums[3]) * 255) if len(nums) >= 4 else 255
+                return (r, g, b, a)
+        # Handle rgb(r,g,b) format
+        elif isinstance(color_str, str) and color_str.startswith('rgb('):
+            nums = re.findall(r"[\d.]+", color_str)
+            if len(nums) >= 3:
+                return (int(float(nums[0])), int(float(nums[1])), int(float(nums[2])), 255)
+        
+        # Try PIL ImageColor
+        result = ImageColor.getrgb(color_str)
+        if len(result) == 3:
+            return (result[0], result[1], result[2], 255)
+        return result
+    except:
+        pass
+    
+    # Fallback regex
+    numbers = re.findall(r"[\d.]+", str(color_str))
+    if len(numbers) >= 3:
+        r = int(float(numbers[0]))
+        g = int(float(numbers[1]))
+        b = int(float(numbers[2]))
+        a = int(float(numbers[3]) * 255) if len(numbers) >= 4 else 255
+        return (r, g, b, a)
+    
+    return default
+
+def get_rgb(color_str, default=(0, 0, 0)):
+    """Convert color string to RGB tuple (for backward compatibility)"""
+    rgba = parse_color(color_str, (*default, 255))
+    return rgba[:3]
+
+def replace_svg_colors(svg_content, color_replacements):
+    """Replace colors in SVG content based on colorsReplace mapping"""
+    if not color_replacements or not svg_content:
+        return svg_content
+    
+    modified_svg = svg_content
+    for old_color, new_color in color_replacements.items():
+        rgb = parse_color(new_color)
+        if len(rgb) == 4:
+            r, g, b, a = rgb
+            new_color_str = f"rgba({r},{g},{b},{a/255:.2f})"
+        else:
+            r, g, b = rgb
+            new_color_str = f"rgb({r},{g},{b})"
+        
+        modified_svg = modified_svg.replace(old_color, new_color_str)
+        modified_svg = modified_svg.replace(old_color.replace(' ', ''), new_color_str)
+    
+    return modified_svg
+
+# ───────────────────────────────────────────────
 # Image & SVG Loading
 # ───────────────────────────────────────────────
 
-def load_image(src, target_w=None, target_h=None, allow_svg=True):
+def load_image(src, target_w=None, target_h=None, color_replacements=None):
     """Load image from URL, data URI, or SVG with dimension validation"""
     if not src or not isinstance(src, str):
         return None
     
-    # Validate target dimensions
     target_w = safe_int(target_w) if target_w else None
     target_h = safe_int(target_h) if target_h else None
     
     try:
         # SVG handling
-        if allow_svg and ('svg' in src.lower() or src.startswith('data:image/svg')):
-            if not CAIROSVG_AVAILABLE:
-                # Return placeholder with valid dimensions
-                w = target_w or 200
-                h = target_h or 200
-                return placeholder_image(w, h, "SVG")
-            return render_svg(src, target_w, target_h)
+        if 'svg' in src.lower() or src.startswith('data:image/svg'):
+            return render_svg(src, target_w, target_h, color_replacements)
 
         # Data URI
         if src.startswith('data:image'):
-            _, encoded = src.split(',', 1)
-            data = base64.b64decode(encoded)
+            if ',' in src:
+                _, encoded = src.split(',', 1)
+                data = base64.b64decode(encoded)
+            else:
+                return None
+            
+            # Check if it's actually an SVG disguised as data URI
+            if 'svg' in src.lower():
+                svg_data = data.decode('utf-8', errors='ignore')
+                return render_svg(svg_data, target_w, target_h, color_replacements)
+            
             img = Image.open(BytesIO(data)).convert('RGBA')
             if target_w and target_h:
                 img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
@@ -117,10 +178,10 @@ def load_image(src, target_w=None, target_h=None, allow_svg=True):
             r = requests.get(src, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
             r.raise_for_status()
             content_type = r.headers.get('content-type', '')
+            
             if 'svg' in content_type or src.endswith('.svg'):
-                if CAIROSVG_AVAILABLE:
-                    return render_svg(r.content, target_w, target_h)
-                return placeholder_image(target_w or 200, target_h or 200, "SVG")
+                return render_svg(r.content, target_w, target_h, color_replacements)
+            
             img = Image.open(BytesIO(r.content)).convert('RGBA')
             if target_w and target_h:
                 img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
@@ -130,30 +191,37 @@ def load_image(src, target_w=None, target_h=None, allow_svg=True):
         st.warning(f"Load failed: {str(e)[:100]}")
     return None
 
-def render_svg(svg_input, w=None, h=None):
-    """Render SVG to PIL Image using cairosvg with dimension validation"""
+def render_svg(svg_input, w=None, h=None, color_replacements=None):
+    """Render SVG to PIL Image with color replacement support"""
     if not CAIROSVG_AVAILABLE:
-        return None
+        w = safe_int(w, 200)
+        h = safe_int(h, 200)
+        return placeholder_image(w, h, "SVG")
     
-    # Ensure valid dimensions for cairosvg
     w = safe_int(w) if w else None
     h = safe_int(h) if h else None
     
     try:
+        # Extract SVG content
         if isinstance(svg_input, str):
             if svg_input.startswith('data:image/svg'):
                 _, encoded = svg_input.split(',', 1)
                 if 'base64' in svg_input:
                     svg_bytes = base64.b64decode(encoded)
+                    svg_content = svg_bytes.decode('utf-8', errors='ignore')
                 else:
-                    svg_bytes = encoded.encode('utf-8')
+                    svg_content = encoded
             else:
-                svg_bytes = svg_input.encode('utf-8')
+                svg_content = svg_input
         else:
-            svg_bytes = svg_input
-
-        # cairosvg requires positive dimensions if specified
-        kwargs = {'bytestring': svg_bytes, 'scale': 2.0}
+            svg_content = svg_input.decode('utf-8', errors='ignore') if isinstance(svg_input, bytes) else str(svg_input)
+        
+        # Apply color replacements
+        if color_replacements:
+            svg_content = replace_svg_colors(svg_content, color_replacements)
+        
+        # Render with cairosvg
+        kwargs = {'bytestring': svg_content.encode('utf-8'), 'scale': 2.0}
         if w and w > 0:
             kwargs['output_width'] = w
         if h and h > 0:
@@ -162,17 +230,14 @@ def render_svg(svg_input, w=None, h=None):
         png = cairosvg.svg2png(**kwargs)
         return Image.open(BytesIO(png)).convert('RGBA')
     except Exception as e:
-        st.warning(f"SVG render failed: {str(e)[:100]}")
-        return None
+        w = safe_int(w, 200)
+        h = safe_int(h, 200)
+        return placeholder_image(w, h, "SVG Error")
 
 def placeholder_image(w, h, text=""):
     """Create placeholder with validated dimensions"""
-    w = safe_int(w, 200)
-    h = safe_int(h, 200)
-    
-    # Ensure minimum size
-    w = max(w, 10)
-    h = max(h, 10)
+    w = max(safe_int(w, 200), 10)
+    h = max(safe_int(h, 200), 10)
     
     img = Image.new('RGBA', (w, h), (60, 60, 60, 180))
     draw = ImageDraw.Draw(img)
@@ -181,7 +246,6 @@ def placeholder_image(w, h, text=""):
     except:
         font = ImageFont.load_default()
     
-    # Center text
     bbox = draw.textbbox((0,0), text, font=font)
     tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
     draw.text(((w-tw)//2, (h-th)//2), text, fill=(220,220,220), font=font)
@@ -191,10 +255,10 @@ def placeholder_image(w, h, text=""):
 # Font Loading System
 # ───────────────────────────────────────────────
 
-def get_font(font_family, font_size, font_style='normal', font_weight='normal'):
+def get_font(size, family='Poppins', weight='normal', style='normal'):
     """Load font with fallback chain"""
-    font_size = safe_int(font_size, 24)
-    cache_key = f"{font_family}_{font_size}_{font_style}_{font_weight}"
+    size = safe_int(size, 32)
+    cache_key = f"{family}_{size}_{weight}_{style}"
     
     if cache_key in st.session_state.font_cache:
         return st.session_state.font_cache[cache_key]
@@ -202,29 +266,45 @@ def get_font(font_family, font_size, font_style='normal', font_weight='normal'):
     font = None
     font_paths = []
     
-    # Bold variant
-    if 'bold' in str(font_weight).lower() or str(font_weight) == '700':
-        font_paths.extend([
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "C:/Windows/Fonts/arialbd.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
-        ])
-    else:
-        font_paths.extend([
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "C:/Windows/Fonts/arial.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
-        ])
+    # Map weight to font file
+    weight_map = {
+        'normal': ['poppins_regular.ttf', 'DejaVuSans.ttf', 'Arial.ttf'],
+        'regular': ['poppins_regular.ttf', 'DejaVuSans.ttf', 'Arial.ttf'],
+        'bold': ['poppins_bold.ttf', 'DejaVuSans-Bold.ttf', 'Arial_Bold.ttf'],
+        'semibold': ['poppins_semi_bold.ttf', 'DejaVuSans-Bold.ttf'],
+        'semi-bold': ['poppins_semi_bold.ttf', 'DejaVuSans-Bold.ttf'],
+        'italic': ['poppins_regular.ttf', 'DejaVuSans.ttf']
+    }
     
-    for path in font_paths:
+    font_names = weight_map.get(weight.lower(), weight_map['normal'])
+    
+    # Check in fonts directory first
+    fonts_dir = "assets/fonts"
+    for name in font_names:
+        path = os.path.join(fonts_dir, name)
         if os.path.exists(path):
             try:
-                font = ImageFont.truetype(path, font_size)
+                font = ImageFont.truetype(path, size)
                 break
             except:
-                continue
+                pass
+    
+    # Fallback to system fonts
+    if font is None:
+        system_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/arialbd.ttf"
+        ]
+        for path in system_paths:
+            if os.path.exists(path):
+                try:
+                    font = ImageFont.truetype(path, size)
+                    break
+                except:
+                    pass
     
     if font is None:
         font = ImageFont.load_default()
@@ -233,95 +313,92 @@ def get_font(font_family, font_size, font_style='normal', font_weight='normal'):
     return font
 
 # ───────────────────────────────────────────────
-# Shape Drawing Helpers
+# Shape Drawing Helpers (from your template)
 # ───────────────────────────────────────────────
 
-def draw_star(draw, cx, cy, outer_r, inner_r, points, fill, stroke=None, stroke_width=1, rotation=0):
-    """Draw a star shape"""
-    outer_r = safe_float(outer_r)
-    inner_r = safe_float(inner_r)
-    points = safe_int(points, 5)
+def draw_shape(draw, x, y, w, h, subtype, fill, stroke, stroke_w, radius=0):
+    """Draw all shape types"""
     
-    coords = []
-    for i in range(points * 2):
-        angle = math.pi / 2 + (i * math.pi / points) + math.radians(rotation)
-        r = outer_r if i % 2 == 0 else inner_r
-        x = cx + r * math.cos(angle)
-        y = cy - r * math.sin(angle)
-        coords.append((x, y))
-    draw.polygon(coords, fill=fill, outline=stroke)
-
-def draw_rounded_rect(draw, xy, radius, fill, outline=None, width=1):
-    """Draw rectangle with rounded corners"""
-    x1, y1, x2, y2 = [safe_float(v) for v in xy]
-    r = min(safe_float(radius), (x2-x1)/2, (y2-y1)/2)
-    
-    if r <= 0:
-        draw.rectangle([x1, y1, x2, y2], fill=fill, outline=outline, width=width)
-        return
-    
-    # Draw main rectangle
-    draw.rectangle([x1+r, y1, x2-r, y2], fill=fill)
-    draw.rectangle([x1, y1+r, x2, y2-r], fill=fill)
-    
-    # Draw four corners
-    draw.pieslice([x1, y1, x1+2*r, y1+2*r], 180, 270, fill=fill)
-    draw.pieslice([x2-2*r, y1, x2, y1+2*r], 270, 360, fill=fill)
-    draw.pieslice([x1, y2-2*r, x1+2*r, y2], 90, 180, fill=fill)
-    draw.pieslice([x2-2*r, y2-2*r, x2, y2], 0, 90, fill=fill)
-    
-    if outline:
-        draw.arc([x1, y1, x1+2*r, y1+2*r], 180, 270, fill=outline, width=width)
-        draw.arc([x2-2*r, y1, x2, y1+2*r], 270, 360, fill=outline, width=width)
-        draw.arc([x1, y2-2*r, x1+2*r, y2], 90, 180, fill=outline, width=width)
-        draw.arc([x2-2*r, y2-2*r, x2, y2], 0, 90, fill=outline, width=width)
-        draw.line([x1+r, y1, x2-r, y1], fill=outline, width=width)
-        draw.line([x1+r, y2, x2-r, y2], fill=outline, width=width)
-        draw.line([x1, y1+r, x1, y2-r], fill=outline, width=width)
-        draw.line([x2, y1+r, x2, y2-r], fill=outline, width=width)
-
-# ───────────────────────────────────────────────
-# Color Parsing
-# ───────────────────────────────────────────────
-
-def parse_color(color_val, default='#000000'):
-    """Parse color from various formats"""
-    if not color_val:
-        return default
-    
-    if isinstance(color_val, str):
-        return color_val
-    
-    if isinstance(color_val, dict):
-        # Handle gradient - return first color
-        if color_val.get('type') == 'linear' or color_val.get('colors'):
-            colors = color_val.get('colors', [])
-            if colors:
-                return colors[0].get('color', default)
-        return color_val.get('color', default)
-    
-    return default
-
-def get_rgb(color_str, default=(0, 0, 0)):
-    """Convert color string to RGB tuple"""
-    if not color_str:
-        return default
-    
-    try:
-        # Handle rgba
-        if 'rgba' in color_str:
-            import re
-            nums = re.findall(r'[\d\.]+', color_str)
-            if len(nums) >= 3:
-                r, g, b = int(nums[0]), int(nums[1]), int(nums[2])
-                return (r, g, b)
+    if subtype in ('rect', 'rectangle'):
+        if radius > 0:
+            if stroke and stroke[3] > 0:
+                draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, 
+                                     fill=fill, outline=stroke, width=int(stroke_w))
+            else:
+                draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, fill=fill)
+        else:
+            if stroke and stroke[3] > 0:
+                draw.rectangle([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w))
+            else:
+                draw.rectangle([x, y, x+w, y+h], fill=fill)
+                
+    elif subtype in ('circle', 'ellipse'):
+        if stroke and stroke[3] > 0:
+            draw.ellipse([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w))
+        else:
+            draw.ellipse([x, y, x+w, y+h], fill=fill)
+            
+    elif subtype == 'rightTriangle':
+        points = [(x, y), (x+w, y), (x, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
         
-        return ImageColor.getrgb(color_str)
-    except:
-        return default
+    elif subtype == 'leftTriangle':
+        points = [(x, y), (x+w, y), (x+w, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype in ('topTriangle', 'triangle'):
+        points = [(x+w/2, y), (x, y+h), (x+w, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'bottomTriangle':
+        points = [(x, y), (x+w, y), (x+w/2, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype in ('diamond', 'rhombus'):
+        points = [(x+w/2, y), (x+w, y+h/2), (x+w/2, y+h), (x, y+h/2)]
+        draw.polygon(points, fill=fill, outline=stroke)
+
+def draw_star(draw, cx, cy, outer_r, inner_r, num_points, fill, rotation=0):
+    """Draw star polygon"""
+    points = []
+    for i in range(num_points * 2):
+        angle = (i * math.pi / num_points) - (math.pi / 2) + math.radians(rotation)
+        r = outer_r if i % 2 == 0 else inner_r
+        px = cx + r * math.cos(angle)
+        py = cy + r * math.sin(angle)
+        points.append((px, py))
+    draw.polygon(points, fill=fill)
+
+def draw_polygon(draw, cx, cy, w, h, sides, fill, rotation=0):
+    """Draw regular polygon"""
+    points = []
+    radius = min(w, h) / 2
+    for i in range(sides):
+        angle = (i * 2 * math.pi / sides) - (math.pi / 2) + math.radians(rotation)
+        px = cx + radius * math.cos(angle)
+        py = cy + radius * math.sin(angle)
+        points.append((px, py))
+    draw.polygon(points, fill=fill)
+
+def draw_arrow(draw, x, y, w, h, direction, fill, stroke, stroke_w):
+    """Draw arrow shape"""
+    if direction == 'right':
+        points = [(x, y+h/3), (x+w/2, y+h/3), (x+w/2, y), (x+w, y+h/2), 
+                  (x+w/2, y+h), (x+w/2, y+2*h/3), (x, y+2*h/3)]
+    elif direction == 'left':
+        points = [(x+w, y+h/3), (x+w/2, y+h/3), (x+w/2, y), (x, y+h/2),
+                  (x+w/2, y+h), (x+w/2, y+2*h/3), (x+w, y+2*h/3)]
+    elif direction == 'up':
+        points = [(x+w/3, y+h), (x+w/3, y+h/2), (x, y+h/2), 
+                  (x+w/2, y), (x+w, y+h/2), (x+2*w/3, y+h/2), (x+2*w/3, y+h)]
+    else:  # down
+        points = [(x+w/3, y), (x+w/3, y+h/2), (x, y+h/2),
+                  (x+w/2, y+h), (x+w, y+h/2), (x+2*w/3, y+h/2), (x+2*w/3, y)]
+    
+    draw.polygon(points, fill=fill, outline=stroke)
 
 # ───────────────────────────────────────────────
-# Core Rendering Engine
+# Core Rendering Functions
 # ───────────────────────────────────────────────
 
 def apply_opacity(img, opacity):
@@ -330,7 +407,6 @@ def apply_opacity(img, opacity):
     if opacity >= 1.0:
         return img
     
-    # Ensure image has alpha channel
     if img.mode != 'RGBA':
         img = img.convert('RGBA')
     
@@ -345,22 +421,20 @@ def rotate_around_center(img, angle):
     if angle == 0:
         return img
     
-    # Ensure valid image
     if img.width <= 0 or img.height <= 0:
         return img
         
     return img.rotate(-angle, expand=True, resample=Image.Resampling.BICUBIC)
 
 def render_text_element(draw, el, overrides, canvas_w, canvas_h):
-    """Render text element with full styling"""
+    """Render text element with multiline support"""
     text = el.get('text', '')
     if not text:
         return
     
-    # Apply overrides based on content detection
-    is_price = any(marker in text for marker in ['KES', 'ksh', '$', '€', '£']) or \
-               (any(c.isdigit() for c in text) and len(text) < 20)
-    is_product_name = len(text) > 3 and not is_price and safe_int(el.get('fontSize'), 0) > 30
+    # Apply overrides
+    is_price = any(marker in text for marker in ['KES', 'ksh', '$', '€', '£', ',']) and any(c.isdigit() for c in text)
+    is_product_name = len(text) > 3 and not is_price and safe_int(el.get('fontSize'), 0) > 25
     
     if is_product_name and overrides.get('product_name'):
         text = overrides['product_name']
@@ -368,56 +442,84 @@ def render_text_element(draw, el, overrides, canvas_w, canvas_h):
         text = overrides['price']
     
     # Get styling
-    font_size = safe_int(el.get('fontSize'), 24)
-    font_family = el.get('fontFamily', 'Arial')
+    font_size = safe_int(el.get('fontSize'), 32)
+    font_family = el.get('fontFamily', 'Poppins')
     font_style = el.get('fontStyle', 'normal')
     font_weight = el.get('fontWeight', 'normal')
-    fill = get_rgb(parse_color(el.get('fill'), '#ffffff'))
+    color = parse_color(el.get('fill', 'black'))
+    color = (color[0], color[1], color[2], int(color[3] * safe_float(el.get('opacity'), 1)))
     
-    # Position with validation
+    # Position
     x = safe_float(el.get('x'))
     y = safe_float(el.get('y'))
     w = safe_float(el.get('width'))
     h = safe_float(el.get('height'))
     
-    # Skip if dimensions are invalid
     if w <= 0 or h <= 0:
         return
     
     rotation = safe_float(el.get('rotation'))
-    opacity = safe_float(el.get('opacity'), 1.0)
+    line_height = safe_float(el.get('lineHeight'), 1.2)
+    letter_spacing = safe_float(el.get('letterSpacing', 0))
     
     # Load font
-    font = get_font(font_family, font_size, font_style, font_weight)
+    font = get_font(font_size, font_family, font_weight, font_style)
     
-    # Calculate text dimensions
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    # Handle multiline text
+    lines = text.split('\n')
     
-    # Alignment
-    align = el.get('align', 'left')
-    if align == 'center':
-        x += (w - text_w) / 2
-    elif align == 'right':
-        x += w - text_w
+    # Calculate total height
+    total_height = 0
+    line_heights = []
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lh = bbox[3] - bbox[1]
+        line_heights.append(lh)
+        total_height += lh * line_height
     
+    # Vertical alignment
     vertical_align = el.get('verticalAlign', 'top')
+    current_y = y
     if vertical_align == 'middle':
-        y += (h - text_h) / 2
+        current_y = y + (h - total_height) / 2
     elif vertical_align == 'bottom':
-        y += h - text_h
+        current_y = y + h - total_height
     
-    # Handle shadow
-    shadow = el.get('shadow')
-    if shadow and shadow.get('enabled', False):
-        sx = x + safe_float(shadow.get('x', 2))
-        sy = y + safe_float(shadow.get('y', 2))
-        shadow_color = get_rgb(shadow.get('color', 'rgba(0,0,0,0.5)'))
-        draw.text((sx, sy), text, fill=shadow_color, font=font)
-    
-    # Draw text
-    draw.text((x, y), text, fill=fill, font=font)
+    # Draw each line
+    for i, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_w = bbox[2] - bbox[0] + (len(line) * letter_spacing)
+        text_h = line_heights[i]
+        
+        # Horizontal alignment
+        align = el.get('align', 'left')
+        if align == 'center':
+            line_x = x + (w - text_w) / 2
+        elif align == 'right':
+            line_x = x + w - text_w
+        else:
+            line_x = x
+        
+        # Shadow
+        shadow = el.get('shadow')
+        if shadow and shadow.get('enabled', False):
+            sx = line_x + safe_float(shadow.get('x', 2))
+            sy = current_y + safe_float(shadow.get('y', 2))
+            shadow_color = parse_color(shadow.get('color', 'rgba(0,0,0,0.5)'))
+            draw.text((sx, sy), line, fill=shadow_color, font=font)
+        
+        # Apply letter spacing by drawing character by character if needed
+        if letter_spacing > 0:
+            char_x = line_x
+            for char in line:
+                draw.text((char_x, current_y), char, fill=color, font=font)
+                char_bbox = draw.textbbox((0, 0), char, font=font)
+                char_w = char_bbox[2] - char_bbox[0]
+                char_x += char_w + letter_spacing
+        else:
+            draw.text((line_x, current_y), line, fill=color, font=font)
+        
+        current_y += text_h * line_height
 
 def render_image_element(canvas, el, overrides):
     """Render image/svg element"""
@@ -425,13 +527,11 @@ def render_image_element(canvas, el, overrides):
     if not src:
         return canvas
     
-    # Validate all dimensions
     x = safe_float(el.get('x'))
     y = safe_float(el.get('y'))
     w = safe_float(el.get('width'))
     h = safe_float(el.get('height'))
     
-    # Skip invalid dimensions
     if w <= 0 or h <= 0:
         return canvas
     
@@ -439,41 +539,53 @@ def render_image_element(canvas, el, overrides):
     opacity = safe_float(el.get('opacity'), 1.0)
     flip_x = el.get('flipX', False)
     flip_y = el.get('flipY', False)
+    corner_radius = safe_float(el.get('cornerRadius', 0))
+    color_replacements = el.get('colorsReplace')
     
-    # Check if this is the main product image
-    is_main_product = w > 200 and h > 200
+    # Check if this is main product image
+    is_main_product = w > 200 and h > 200 and el.get('type') == 'image'
     
-    # Apply override if this is the product image slot and override provided
     if is_main_product and overrides.get('product_image'):
         src = overrides['product_image']
     
     # Load image
-    img = load_image(src, int(w), int(h))
+    img = load_image(src, int(w), int(h), color_replacements)
     if not img:
+        # Draw placeholder
+        draw = ImageDraw.Draw(canvas)
+        draw.rectangle([x, y, x+w, y+h], outline='red', width=3)
         return canvas
     
-    # Apply transforms
+    # Apply flips
     if flip_x:
         img = img.transpose(Image.Flip.LEFT_RIGHT)
     if flip_y:
         img = img.transpose(Image.Flip.TOP_BOTTOM)
     
+    # Apply rotation
     if rotation != 0:
         img = rotate_around_center(img, rotation)
-        # Center the rotated image
         new_x = x + (w - img.width) / 2
         new_y = y + (h - img.height) / 2
     else:
         new_x, new_y = x, y
     
+    # Apply opacity
     if opacity < 1.0:
         img = apply_opacity(img, opacity)
+    
+    # Apply corner radius mask
+    if corner_radius > 0:
+        mask = Image.new('L', (img.width, img.height), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.rounded_rectangle([0, 0, img.width, img.height], 
+                                   radius=corner_radius, fill=255)
+        img.putalpha(mask)
     
     # Clip to canvas bounds
     paste_x = max(0, int(new_x))
     paste_y = max(0, int(new_y))
     
-    # Crop if extending beyond canvas
     crop_left = max(0, -int(new_x))
     crop_top = max(0, -int(new_y))
     crop_right = min(img.width, canvas.width - paste_x + crop_left)
@@ -483,7 +595,6 @@ def render_image_element(canvas, el, overrides):
         if crop_right > crop_left and crop_bottom > crop_top:
             img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
     
-    # Final validation before paste
     if img.width > 0 and img.height > 0 and paste_x < canvas.width and paste_y < canvas.height:
         try:
             canvas.paste(img, (paste_x, paste_y), img)
@@ -494,7 +605,6 @@ def render_image_element(canvas, el, overrides):
 
 def render_shape_element(draw, el):
     """Render shape/figure element"""
-    # Validate dimensions
     x = safe_float(el.get('x'))
     y = safe_float(el.get('y'))
     w = safe_float(el.get('width'))
@@ -504,62 +614,70 @@ def render_shape_element(draw, el):
         return
     
     rotation = safe_float(el.get('rotation'))
+    opacity = safe_float(el.get('opacity'), 1.0)
     
     subtype = (el.get('subType') or el.get('subtype', 'rect')).lower()
-    fill = get_rgb(parse_color(el.get('fill'), '#888888'))
-    stroke = get_rgb(parse_color(el.get('stroke')))
+    fill = parse_color(el.get('fill', '#888888'))
+    fill = (fill[0], fill[1], fill[2], int(fill[3] * opacity))
+    
+    stroke_str = el.get('stroke', 'transparent')
+    stroke = parse_color(stroke_str) if stroke_str != 'transparent' else None
+    if stroke:
+        stroke = (stroke[0], stroke[1], stroke[2], int(stroke[3] * opacity))
+    
     stroke_width = safe_int(el.get('strokeWidth'), 0)
     corner_radius = safe_float(el.get('cornerRadius'), 0)
     
     # Draw based on type
-    if subtype in ('rect', 'rectangle'):
-        if corner_radius > 0:
-            draw_rounded_rect(draw, [x, y, x+w, y+h], corner_radius, fill, stroke, stroke_width)
-        else:
-            draw.rectangle([x, y, x+w, y+h], fill=fill, outline=stroke, width=stroke_width)
-    
-    elif subtype in ('circle', 'ellipse'):
-        draw.ellipse([x, y, x+w, y+h], fill=fill, outline=stroke, width=stroke_width)
+    if subtype in ('rect', 'rectangle', 'circle', 'rightTriangle', 'leftTriangle', 
+                   'topTriangle', 'bottomTriangle', 'triangle', 'diamond', 'rhombus'):
+        draw_shape(draw, x, y, w, h, subtype, fill, stroke, stroke_width, corner_radius)
     
     elif subtype == 'star':
-        points = safe_int(el.get('points'), 5)
-        outer_r = min(w, h) / 2
-        inner_r = outer_r * 0.4
         cx, cy = x + w/2, y + h/2
-        draw_star(draw, cx, cy, outer_r, inner_r, points, fill, stroke, stroke_width, rotation)
+        outer_r = min(w, h) / 2
+        inner_r = outer_r * el.get('innerRadius', 0.5)
+        draw_star(draw, cx, cy, outer_r, inner_r, 
+                 safe_int(el.get('numPoints', 5)), fill, rotation)
     
-    elif subtype in ('triangle', 'topTriangle'):
-        points = [(x+w/2, y), (x+w, y+h), (x, y+h)]
-        draw.polygon(points, fill=fill, outline=stroke)
+    elif subtype == 'polygon':
+        cx, cy = x + w/2, y + h/2
+        draw_polygon(draw, cx, cy, w, h, 
+                    safe_int(el.get('sides', 6)), fill, rotation)
+    
+    elif subtype == 'arrow':
+        direction = el.get('direction', 'right')
+        draw_arrow(draw, x, y, w, h, direction, fill, stroke, stroke_width)
     
     elif subtype == 'line':
-        x1, y1 = x, y
-        x2, y2 = x + w, y + h
+        x1 = x + safe_float(el.get('x1', 0))
+        y1 = y + safe_float(el.get('y1', 0))
+        x2 = x + safe_float(el.get('x2', w))
+        y2 = y + safe_float(el.get('y2', h))
         draw.line([(x1, y1), (x2, y2)], fill=stroke or fill, width=max(1, stroke_width))
 
+# ───────────────────────────────────────────────
+# Main Render Function - FIXED ROOT LEVEL DIMENSIONS
+# ───────────────────────────────────────────────
+
 def render_polotno(pjson: dict, overrides: dict) -> Image.Image:
-    """
-    Main render function - converts Polotno JSON to PIL Image
-    """
+    """Main render function - reads canvas dimensions from ROOT level"""
+    
+    # Get canvas dimensions from ROOT of JSON (not from pages)
+    canvas_width = safe_int(pjson.get('width'), 1080)
+    canvas_height = safe_int(pjson.get('height'), 1920)
+    
     pages = pjson.get('pages', [])
     if not pages:
-        return Image.new('RGBA', (800, 600), (255, 255, 255, 255))
+        return Image.new('RGBA', (canvas_width, canvas_height), (255, 255, 255, 255))
     
     page = pages[0]
-    
-    # Parse page dimensions with validation
-    w = safe_int(page.get('width'), 1080)
-    h = safe_int(page.get('height'), 1080)
-    
-    # Ensure minimum canvas size
-    w = max(w, 100)
-    h = max(h, 100)
+    w, h = canvas_width, canvas_height
     
     # Create canvas
     bg_url = overrides.get('background_url', '')
     transparent = overrides.get('transparent_bg', False)
     
-    # Try to load background image first
     if bg_url:
         bg = load_image(bg_url, w, h)
         if bg:
@@ -567,10 +685,10 @@ def render_polotno(pjson: dict, overrides: dict) -> Image.Image:
         else:
             canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0) if transparent else (255, 255, 255, 255))
     else:
-        # Check for background in JSON
-        bg_color = page.get('background', '#ffffff')
-        if isinstance(bg_color, str) and bg_color.startswith('http'):
-            bg = load_image(bg_color, w, h)
+        # Check for background in page
+        page_bg = page.get('background', 'white')
+        if isinstance(page_bg, str) and page_bg.startswith('http'):
+            bg = load_image(page_bg, w, h)
             if bg:
                 canvas = bg.convert('RGBA')
             else:
@@ -579,53 +697,56 @@ def render_polotno(pjson: dict, overrides: dict) -> Image.Image:
             if transparent:
                 canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0))
             else:
-                try:
-                    rgb = get_rgb(bg_color, (255, 255, 255))
-                    canvas = Image.new('RGBA', (w, h), (*rgb, 255))
-                except:
-                    canvas = Image.new('RGBA', (w, h), (255, 255, 255, 255))
+                bg_color = parse_color(page_bg, (255, 255, 255, 255))
+                canvas = Image.new('RGBA', (w, h), bg_color)
     
     # Sort children by z-index
     children = page.get('children', [])
     children.sort(key=lambda x: safe_int(x.get('z'), 0))
     
-    # Process each element
-    for el in children:
-        try:
-            el_type = el.get('type', '').lower()
-            
-            if el_type == 'text':
-                draw = ImageDraw.Draw(canvas)
-                render_text_element(draw, el, overrides, w, h)
-            
-            elif el_type in ('image', 'svg'):
-                canvas = render_image_element(canvas, el, overrides)
-            
-            elif el_type in ('figure', 'shape', 'rect', 'circle'):
-                draw = ImageDraw.Draw(canvas)
-                render_shape_element(draw, el)
-            
-            elif el_type == 'group':
-                # Handle groups
-                group_x = safe_float(el.get('x'))
-                group_y = safe_float(el.get('y'))
-                for child in el.get('children', []):
-                    child_copy = child.copy()
-                    child_copy['x'] = safe_float(child.get('x', 0)) + group_x
-                    child_copy['y'] = safe_float(child.get('y', 0)) + group_y
-                    
-                    child_type = child_copy.get('type', '').lower()
-                    if child_type == 'text':
-                        draw = ImageDraw.Draw(canvas)
-                        render_text_element(draw, child_copy, overrides, w, h)
-                    elif child_type in ('image', 'svg'):
-                        canvas = render_image_element(canvas, child_copy, overrides)
-                    elif child_type in ('figure', 'shape'):
-                        draw = ImageDraw.Draw(canvas)
-                        render_shape_element(draw, child_copy)
+    # Process each element recursively
+    def process_element(el, parent_x=0, parent_y=0):
+        """Recursively process elements including groups"""
+        if not isinstance(el, dict):
+            return
         
+        elem_type = el.get('type', '').lower()
+        x = parent_x + safe_float(el.get('x', 0))
+        y = parent_y + safe_float(el.get('y', 0))
+        
+        # Update element position for rendering
+        el_copy = el.copy()
+        el_copy['x'] = x
+        el_copy['y'] = y
+        
+        if not el.get('visible', True):
+            return
+        
+        if elem_type == 'group':
+            # Process children with offset
+            for child in el.get('children', []):
+                process_element(child, x, y)
+                
+        elif elem_type == 'text':
+            draw = ImageDraw.Draw(canvas)
+            render_text_element(draw, el_copy, overrides, w, h)
+        
+        elif elem_type in ('image', 'svg'):
+            nonlocal canvas
+            canvas = render_image_element(canvas, el_copy, overrides)
+        
+        elif elem_type in ('figure', 'shape', 'rect', 'circle', 'star', 'polygon', 'arrow'):
+            draw = ImageDraw.Draw(canvas)
+            render_shape_element(draw, el_copy)
+        
+        elif elem_type == 'line':
+            draw = ImageDraw.Draw(canvas)
+            render_shape_element(draw, el_copy)  # line is handled in shape function
+    
+    for child in children:
+        try:
+            process_element(child)
         except Exception as e:
-            # Silently skip problematic elements
             continue
     
     return canvas
@@ -637,7 +758,6 @@ def render_polotno(pjson: dict, overrides: dict) -> Image.Image:
 st.title("🎨 Polotno to PIL Converter")
 st.markdown("Convert Polotno JSON designs to high-quality images")
 
-# Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
     st.session_state.transparent_bg = st.checkbox(
@@ -645,7 +765,6 @@ with st.sidebar:
         value=st.session_state.transparent_bg
     )
 
-# Main layout
 col_load, col_edit = st.columns([1, 1])
 
 with col_load:
@@ -665,17 +784,13 @@ with col_load:
             try:
                 data = json.loads(content)
                 st.session_state.original_json = data
-                st.session_state.working_json = json.loads(json.dumps(data))
                 
-                # Extract page dimensions for display
+                # Show canvas dimensions from root
+                root_w = safe_int(data.get('width'), 0)
+                root_h = safe_int(data.get('height'), 0)
+                
                 pages = data.get('pages', [])
-                if pages:
-                    page = pages[0]
-                    w = safe_int(page.get('width'), 0)
-                    h = safe_int(page.get('height'), 0)
-                    st.success(f"✅ Loaded {len(pages)} page(s) • {w}×{h}px")
-                else:
-                    st.success("✅ Loaded!")
+                st.success(f"✅ Loaded {len(pages)} page(s) • Canvas: {root_w}×{root_h}px")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
@@ -699,7 +814,6 @@ with col_edit:
     else:
         st.info("Load a design first")
 
-# Render section
 st.markdown("---")
 
 if st.session_state.original_json:
@@ -731,7 +845,6 @@ if st.session_state.original_json:
             st.subheader("👁️ Preview")
             st.image(st.session_state.rendered_image, use_column_width=True)
             
-            # Downloads
             col1, col2, col3 = st.columns(3)
             
             with col1:
