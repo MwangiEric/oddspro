@@ -10,3 +10,4 @@ groq
 pyperclip
 moviepy
 lxml
+cairosvg
