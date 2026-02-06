@@ -5,6 +5,8 @@ import requests
 import base64
 import re
 import math
+import hashlib
+from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont, ImageColor, ImageFilter
 from io import BytesIO
 import os
@@ -20,6 +22,34 @@ except ImportError:
 st.set_page_config(page_title="Polotno to PIL Converter", layout="wide")
 
 # ───────────────────────────────────────────────
+# Caching Configuration
+# ───────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def load_image_cached(src, target_w=None, target_h=None, color_replacements_json=None):
+    """Cached image loading with hash-based key"""
+    color_replacements = json.loads(color_replacements_json) if color_replacements_json else None
+    return load_image_internal(src, target_w, target_h, color_replacements)
+
+@st.cache_data(ttl=3600)
+def render_svg_cached(svg_hash, w=None, h=None, color_replacements_json=None):
+    """Cached SVG rendering"""
+    color_replacements = json.loads(color_replacements_json) if color_replacements_json else None
+    # svg_content would need to be stored/retrieved - for now, skip caching of SVG content
+    return None
+
+@st.cache_data(ttl=7200)
+def get_font_cached(size, family, weight, style):
+    """Cached font loading"""
+    return get_font_internal(size, family, weight, style)
+
+@st.cache_data(ttl=300)
+def render_polotno_cached(json_hash, overrides_json):
+    """Cache rendered images based on JSON content hash"""
+    # This is a placeholder - actual implementation would require storing images
+    pass
+
+# ───────────────────────────────────────────────
 # Session State
 # ───────────────────────────────────────────────
 defaults = {
@@ -31,7 +61,8 @@ defaults = {
     'price': "99,999",
     'background_url': "",
     'transparent_bg': False,
-    'font_cache': {}
+    'font_cache': {},
+    'image_cache': {}
 }
 
 for k, v in defaults.items():
@@ -113,11 +144,6 @@ def parse_color(color_str, default=(0, 0, 0, 255)):
     
     return default
 
-def get_rgb(color_str, default=(0, 0, 0)):
-    """Convert color string to RGB tuple (for backward compatibility)"""
-    rgba = parse_color(color_str, (*default, 255))
-    return rgba[:3]
-
 def replace_svg_colors(svg_content, color_replacements):
     """Replace colors in SVG content based on colorsReplace mapping"""
     if not color_replacements or not svg_content:
@@ -139,11 +165,11 @@ def replace_svg_colors(svg_content, color_replacements):
     return modified_svg
 
 # ───────────────────────────────────────────────
-# Image & SVG Loading
+# Image & SVG Loading (Internal - not cached)
 # ───────────────────────────────────────────────
 
-def load_image(src, target_w=None, target_h=None, color_replacements=None):
-    """Load image from URL, data URI, or SVG with dimension validation"""
+def load_image_internal(src, target_w=None, target_h=None, color_replacements=None):
+    """Internal image loading function"""
     if not src or not isinstance(src, str):
         return None
     
@@ -153,7 +179,7 @@ def load_image(src, target_w=None, target_h=None, color_replacements=None):
     try:
         # SVG handling
         if 'svg' in src.lower() or src.startswith('data:image/svg'):
-            return render_svg(src, target_w, target_h, color_replacements)
+            return render_svg_internal(src, target_w, target_h, color_replacements)
 
         # Data URI
         if src.startswith('data:image'):
@@ -166,7 +192,7 @@ def load_image(src, target_w=None, target_h=None, color_replacements=None):
             # Check if it's actually an SVG disguised as data URI
             if 'svg' in src.lower():
                 svg_data = data.decode('utf-8', errors='ignore')
-                return render_svg(svg_data, target_w, target_h, color_replacements)
+                return render_svg_internal(svg_data, target_w, target_h, color_replacements)
             
             img = Image.open(BytesIO(data)).convert('RGBA')
             if target_w and target_h:
@@ -180,7 +206,7 @@ def load_image(src, target_w=None, target_h=None, color_replacements=None):
             content_type = r.headers.get('content-type', '')
             
             if 'svg' in content_type or src.endswith('.svg'):
-                return render_svg(r.content, target_w, target_h, color_replacements)
+                return render_svg_internal(r.content, target_w, target_h, color_replacements)
             
             img = Image.open(BytesIO(r.content)).convert('RGBA')
             if target_w and target_h:
@@ -191,8 +217,14 @@ def load_image(src, target_w=None, target_h=None, color_replacements=None):
         st.warning(f"Load failed: {str(e)[:100]}")
     return None
 
-def render_svg(svg_input, w=None, h=None, color_replacements=None):
-    """Render SVG to PIL Image with color replacement support"""
+def load_image(src, target_w=None, target_h=None, color_replacements=None):
+    """Public interface with caching"""
+    # Create a cache key from parameters
+    color_json = json.dumps(color_replacements, sort_keys=True) if color_replacements else None
+    return load_image_cached(src, target_w, target_h, color_json)
+
+def render_svg_internal(svg_input, w=None, h=None, color_replacements=None):
+    """Internal SVG rendering"""
     if not CAIROSVG_AVAILABLE:
         w = safe_int(w, 200)
         h = safe_int(h, 200)
@@ -234,6 +266,10 @@ def render_svg(svg_input, w=None, h=None, color_replacements=None):
         h = safe_int(h, 200)
         return placeholder_image(w, h, "SVG Error")
 
+def render_svg(svg_input, w=None, h=None, color_replacements=None):
+    """Public interface"""
+    return render_svg_internal(svg_input, w, h, color_replacements)
+
 def placeholder_image(w, h, text=""):
     """Create placeholder with validated dimensions"""
     w = max(safe_int(w, 200), 10)
@@ -255,14 +291,9 @@ def placeholder_image(w, h, text=""):
 # Font Loading System
 # ───────────────────────────────────────────────
 
-def get_font(size, family='Poppins', weight='normal', style='normal'):
-    """Load font with fallback chain"""
+def get_font_internal(size, family='Poppins', weight='normal', style='normal'):
+    """Internal font loading"""
     size = safe_int(size, 32)
-    cache_key = f"{family}_{size}_{weight}_{style}"
-    
-    if cache_key in st.session_state.font_cache:
-        return st.session_state.font_cache[cache_key]
-    
     font = None
     font_paths = []
     
@@ -309,11 +340,14 @@ def get_font(size, family='Poppins', weight='normal', style='normal'):
     if font is None:
         font = ImageFont.load_default()
     
-    st.session_state.font_cache[cache_key] = font
     return font
 
+def get_font(size, family='Poppins', weight='normal', style='normal'):
+    """Public interface with caching"""
+    return get_font_cached(size, family, weight, style)
+
 # ───────────────────────────────────────────────
-# Shape Drawing Helpers (from your template)
+# Shape Drawing Helpers
 # ───────────────────────────────────────────────
 
 def draw_shape(draw, x, y, w, h, subtype, fill, stroke, stroke_w, radius=0):
@@ -522,7 +556,7 @@ def render_text_element(draw, el, overrides, canvas_w, canvas_h):
         current_y += text_h * line_height
 
 def render_image_element(canvas, el, overrides):
-    """Render image/svg element"""
+    """Render image/svg element - returns modified canvas"""
     src = el.get('src', '')
     if not src:
         return canvas
@@ -657,7 +691,57 @@ def render_shape_element(draw, el):
         draw.line([(x1, y1), (x2, y2)], fill=stroke or fill, width=max(1, stroke_width))
 
 # ───────────────────────────────────────────────
-# Main Render Function - FIXED ROOT LEVEL DIMENSIONS
+# Element Processor Class (avoids nonlocal issues)
+# ───────────────────────────────────────────────
+
+class ElementProcessor:
+    """Class to process elements without nonlocal issues"""
+    
+    def __init__(self, canvas, overrides, canvas_w, canvas_h):
+        self.canvas = canvas
+        self.overrides = overrides
+        self.canvas_w = canvas_w
+        self.canvas_h = canvas_h
+    
+    def process_element(self, el, parent_x=0, parent_y=0):
+        """Recursively process elements including groups"""
+        if not isinstance(el, dict):
+            return
+        
+        elem_type = el.get('type', '').lower()
+        x = parent_x + safe_float(el.get('x', 0))
+        y = parent_y + safe_float(el.get('y', 0))
+        
+        # Update element position for rendering
+        el_copy = el.copy()
+        el_copy['x'] = x
+        el_copy['y'] = y
+        
+        if not el.get('visible', True):
+            return
+        
+        if elem_type == 'group':
+            # Process children with offset
+            for child in el.get('children', []):
+                self.process_element(child, x, y)
+                
+        elif elem_type == 'text':
+            draw = ImageDraw.Draw(self.canvas)
+            render_text_element(draw, el_copy, self.overrides, self.canvas_w, self.canvas_h)
+        
+        elif elem_type in ('image', 'svg'):
+            self.canvas = render_image_element(self.canvas, el_copy, self.overrides)
+        
+        elif elem_type in ('figure', 'shape', 'rect', 'circle', 'star', 'polygon', 'arrow'):
+            draw = ImageDraw.Draw(self.canvas)
+            render_shape_element(draw, el_copy)
+        
+        elif elem_type == 'line':
+            draw = ImageDraw.Draw(self.canvas)
+            render_shape_element(draw, el_copy)
+
+# ───────────────────────────────────────────────
+# Main Render Function - FIXED
 # ───────────────────────────────────────────────
 
 def render_polotno(pjson: dict, overrides: dict) -> Image.Image:
@@ -704,52 +788,16 @@ def render_polotno(pjson: dict, overrides: dict) -> Image.Image:
     children = page.get('children', [])
     children.sort(key=lambda x: safe_int(x.get('z'), 0))
     
-    # Process each element recursively
-    def process_element(el, parent_x=0, parent_y=0):
-        """Recursively process elements including groups"""
-        if not isinstance(el, dict):
-            return
-        
-        elem_type = el.get('type', '').lower()
-        x = parent_x + safe_float(el.get('x', 0))
-        y = parent_y + safe_float(el.get('y', 0))
-        
-        # Update element position for rendering
-        el_copy = el.copy()
-        el_copy['x'] = x
-        el_copy['y'] = y
-        
-        if not el.get('visible', True):
-            return
-        
-        if elem_type == 'group':
-            # Process children with offset
-            for child in el.get('children', []):
-                process_element(child, x, y)
-                
-        elif elem_type == 'text':
-            draw = ImageDraw.Draw(canvas)
-            render_text_element(draw, el_copy, overrides, w, h)
-        
-        elif elem_type in ('image', 'svg'):
-            nonlocal canvas
-            canvas = render_image_element(canvas, el_copy, overrides)
-        
-        elif elem_type in ('figure', 'shape', 'rect', 'circle', 'star', 'polygon', 'arrow'):
-            draw = ImageDraw.Draw(canvas)
-            render_shape_element(draw, el_copy)
-        
-        elif elem_type == 'line':
-            draw = ImageDraw.Draw(canvas)
-            render_shape_element(draw, el_copy)  # line is handled in shape function
+    # Use class-based processor to avoid nonlocal issues
+    processor = ElementProcessor(canvas, overrides, w, h)
     
     for child in children:
         try:
-            process_element(child)
+            processor.process_element(child)
         except Exception as e:
             continue
     
-    return canvas
+    return processor.canvas
 
 # ───────────────────────────────────────────────
 # UI Components
