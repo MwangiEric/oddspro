@@ -7,10 +7,11 @@ import requests
 import pandas as pd
 from datetime import datetime
 import zipfile
+import textwrap
 
 st.set_page_config(page_title="Bulk Ad Generator", layout="wide")
 
-# API Configuration - FIXED ENDPOINT
+# API Configuration - CORRECT ENDPOINT
 IMAGAPI_BASE = "https://imagapi.vercel.app/api/v1"
 
 # Social Media Presets
@@ -39,12 +40,12 @@ defaults = {
     'price_col': 3,
     'image_col': 4,
     'product_x': 100,
-    'product_y': 150,
+    'product_y': 200,
     'product_w': 400,
     'product_h': 400,
     'product_radius': 20,
     'price_x': 100,
-    'price_y': 600,
+    'price_y': 650,
     'price_size': 48,
     'price_color': '#FFFFFF',
     'price_align': 'left',
@@ -58,61 +59,64 @@ defaults = {
     'show_product_name': True,
     'name_x': 100,
     'name_y': 80,
-    'name_size': 36,
+    'name_size': 32,
     'name_color': '#FFFFFF',
     'name_align': 'left',
     'name_weight': 'bold',
     'name_bg': True,
     'name_bg_color': '#000000',
-    'name_padding': 10,
+    'name_padding': 12,
     'name_radius': 8,
     'name_shadow': True,
-    'name_max_chars': 40,
+    'name_max_width': 800,  # For text wrapping
+    'name_max_lines': 2,
     'use_image_search': False,
     'image_search_col': None,
+    'api_file_type': 'png',  # png, jpg, webp
 }
 
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-def search_product_image(query):
-    """Search for product image using ImagAPI - FIXED ENDPOINT"""
+def search_product_image(query, file_type='png'):
+    """Search for product image using ImagAPI - CORRECT ENDPOINT"""
     if not query or pd.isna(query):
         return None
     
     try:
-        # FIXED: Use correct endpoint /search not /assets/search
-        url = f"{IMAGAPI_BASE}/search"
+        # CORRECT: Use /products/search endpoint with proper params
+        url = f"{IMAGAPI_BASE}/products/search"
         params = {
             "q": str(query)[:100],
-            "limit": 1  # Only need first result
+            "file_type": file_type,  # png, jpg, webp
+            "limit": 5  # Get a few results to have fallback
         }
         
         response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
         
-        # Parse response - handle different possible structures
-        images = data.get("images", []) or data.get("results", []) or data.get("data", [])
+        # Parse response
+        images = data.get("images", []) or data.get("results", []) or []
         
         if images and len(images) > 0:
-            first_image = images[0]
-            # Handle different response formats
-            image_url = (first_image.get('url') or 
-                        first_image.get('image_url') or 
-                        first_image.get('src') or
-                        first_image.get('link'))
-            
-            if image_url:
-                return {
-                    'url': image_url,
-                    'thumbnail': first_image.get('thumbnail') or image_url,
-                    'source': first_image.get('source', 'imagapi')
-                }
+            # Use first valid image
+            for img in images:
+                image_url = (img.get('url') or 
+                            img.get('image_url') or 
+                            img.get('src') or
+                            img.get('link'))
+                
+                if image_url:
+                    return {
+                        'url': image_url,
+                        'thumbnail': img.get('thumbnail') or image_url,
+                        'source': img.get('source', 'imagapi')
+                    }
         return None
     except Exception as e:
-        st.warning(f"Image search failed: {str(e)[:100]}")
+        st.warning(f"Search failed: {str(e)[:80]}")
         return None
 
 def get_font(size, weight='normal'):
@@ -156,49 +160,112 @@ def load_image_from_url(url):
     except Exception as e:
         return None
 
-def draw_text_with_style(draw, text, x, y, font, color, align='left', 
-                         bg=False, bg_color=(0,0,0), padding=10, radius=8, 
-                         shadow=False, max_width=None):
-    """Helper to draw styled text with background and shadow"""
+def wrap_text_to_lines(text, font, max_width, max_lines=2):
+    """Wrap text to fit within max_width, limited to max_lines"""
     if not text:
+        return [""]
+    
+    text = str(text).strip()
+    
+    # Try to fit on one line first
+    bbox = font.getbbox(text)
+    if bbox[2] - bbox[0] <= max_width:
+        return [text]
+    
+    # Calculate average char width
+    avg_char_width = (bbox[2] - bbox[0]) / len(text) if len(text) > 0 else 10
+    chars_per_line = int(max_width / avg_char_width) if avg_char_width > 0 else 20
+    
+    # Wrap text
+    wrapped = textwrap.wrap(text, width=max(chars_per_line, 10), 
+                           break_long_words=True, break_on_hyphens=True)
+    
+    # Limit to max_lines
+    if len(wrapped) > max_lines:
+        # Join first max_lines-1, then truncate last with ellipsis
+        result = wrapped[:max_lines-1]
+        last_line = wrapped[max_lines-1]
+        # Truncate last line and add ellipsis
+        while len(last_line) > 3:
+            test_line = last_line + "..."
+            bbox = font.getbbox(test_line)
+            if bbox[2] - bbox[0] <= max_width:
+                result.append(test_line)
+                break
+            last_line = last_line[:-1]
+        else:
+            result.append("...")
+        return result
+    
+    return wrapped
+
+def draw_text_block(draw, lines, x, y, font, color, align='left', 
+                    bg=False, bg_color=(0,0,0), padding=10, radius=8, 
+                    shadow=False, line_height=1.2):
+    """Draw multiple lines of text with styling"""
+    if not lines:
         return y
     
-    # Calculate text dimensions
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    # Calculate total dimensions
+    max_width = 0
+    total_height = 0
+    line_heights = []
     
-    # Truncate if too long
-    if max_width and text_w > max_width:
-        while text_w > max_width and len(text) > 3:
-            text = text[:-4] + "..."
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        max_width = max(max_width, w)
+        line_heights.append(h)
+        total_height += h * line_height
     
-    # Alignment
-    if align == 'center':
-        x = x - text_w // 2
-    elif align == 'right':
-        x = x - text_w
+    # Adjust start Y to not cut off first line
+    first_line_h = line_heights[0] if line_heights else font.size
+    y = y - first_line_h + font.size  # Adjust baseline
     
     # Draw background
     if bg:
-        bg_rect = [x - padding, y - padding, x + text_w + padding, y + text_h + padding]
+        bg_x = x
+        if align == 'center':
+            bg_x = x - max_width // 2 - padding
+        elif align == 'right':
+            bg_x = x - max_width - padding
+        
+        bg_rect = [
+            bg_x,
+            y - padding,
+            bg_x + max_width + padding * 2,
+            y + total_height + padding
+        ]
         draw.rounded_rectangle(bg_rect, radius=radius, fill=bg_color)
     
-    # Draw shadow
-    if shadow:
-        draw.text((x + 2, y + 2), text, font=font, fill='black')
+    # Draw each line
+    current_y = y
+    for i, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_w = bbox[2] - bbox[0]
+        
+        # Alignment
+        line_x = x
+        if align == 'center':
+            line_x = x - line_w // 2
+        elif align == 'right':
+            line_x = x - line_w
+        
+        # Shadow
+        if shadow:
+            draw.text((line_x + 2, current_y + 2), line, font=font, fill='black')
+        
+        # Text
+        draw.text((line_x, current_y), line, font=font, fill=color)
+        
+        current_y += line_heights[i] * line_height
     
-    # Draw text
-    draw.text((x, y), text, font=font, fill=color)
-    
-    return y + text_h
+    return current_y
 
 def render_single_ad(canvas_size, base_image, product_image, product_name, price, config):
     """Render a single ad with given parameters"""
-    # Create canvas with specified size
+    # Create canvas
     canvas = Image.new('RGBA', canvas_size, (255, 255, 255, 255))
     
     # Paste base image (resize to fit canvas)
@@ -208,23 +275,27 @@ def render_single_ad(canvas_size, base_image, product_image, product_name, price
     
     draw = ImageDraw.Draw(canvas)
     
-    # Draw Product Name
+    # Draw Product Name (with text wrapping)
     if config.get('show_product_name') and product_name:
         name_font = get_font(config['name_size'], config['name_weight'])
         name_color = ImageColor.getrgb(config['name_color'])
         name_bg_color = ImageColor.getrgb(config['name_bg_color'])
         
-        # Truncate name if too long
-        name_text = str(product_name)
-        if len(name_text) > config.get('name_max_chars', 50):
-            name_text = name_text[:47] + "..."
+        # Wrap text to max 2 lines
+        wrapped_lines = wrap_text_to_lines(
+            str(product_name), 
+            name_font, 
+            config.get('name_max_width', canvas_size[0] - 200),
+            config.get('name_max_lines', 2)
+        )
         
-        draw_text_with_style(
-            draw, name_text, config['name_x'], config['name_y'],
+        draw_text_block(
+            draw, wrapped_lines, 
+            config['name_x'], config['name_y'],
             name_font, name_color, config['name_align'],
-            config['name_bg'], name_bg_color, config['name_padding'],
-            config['name_radius'], config['name_shadow'],
-            max_width=canvas_size[0] - config['name_x'] - 50
+            config['name_bg'], name_bg_color, 
+            config['name_padding'], config['name_radius'],
+            config['name_shadow'], 1.3  # Slightly more line height for names
         )
     
     # Paste Product Image
@@ -260,55 +331,14 @@ def render_single_ad(canvas_size, base_image, product_image, product_name, price
         price_str = str(price)
         lines = price_str.split('\n')
         
-        current_y = config['price_y']
-        max_line_width = 0
-        
-        # Calculate max width for background
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=price_font)
-            max_line_width = max(max_line_width, bbox[2] - bbox[0])
-        
-        # Draw background box for all lines
-        if config['price_bg'] and lines:
-            total_height = sum(draw.textbbox((0, 0), line, font=price_font)[3] - 
-                              draw.textbbox((0, 0), line, font=price_font)[1] 
-                              for line in lines)
-            total_height += (len(lines) - 1) * int(config['price_size'] * (config['price_line_height'] - 1))
-            
-            bg_x = config['price_x']
-            if config['price_align'] == 'center':
-                bg_x = config['price_x'] - max_line_width // 2 - config['price_padding']
-            elif config['price_align'] == 'right':
-                bg_x = config['price_x'] - max_line_width - config['price_padding']
-            
-            bg_rect = [
-                bg_x,
-                current_y - config['price_padding'],
-                bg_x + max_line_width + config['price_padding'] * 2,
-                current_y + total_height + config['price_padding']
-            ]
-            draw.rounded_rectangle(bg_rect, radius=config['price_radius'], fill=price_bg_color)
-        
-        # Draw each line
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=price_font)
-            line_w = bbox[2] - bbox[0]
-            line_h = bbox[3] - bbox[1]
-            
-            line_x = config['price_x']
-            if config['price_align'] == 'center':
-                line_x = config['price_x'] - line_w // 2
-            elif config['price_align'] == 'right':
-                line_x = config['price_x'] - line_w
-            
-            # Shadow
-            if config['price_shadow']:
-                draw.text((line_x + 2, current_y + 2), line, font=price_font, fill='black')
-            
-            # Main text
-            draw.text((line_x, current_y), line, font=price_font, fill=price_color)
-            
-            current_y += int(line_h * config['price_line_height'])
+        draw_text_block(
+            draw, lines,
+            config['price_x'], config['price_y'],
+            price_font, price_color, config['price_align'],
+            config['price_bg'], price_bg_color,
+            config['price_padding'], config['price_radius'],
+            config['price_shadow'], config['price_line_height']
+        )
     
     return canvas
 
@@ -359,7 +389,7 @@ st.info(f"Canvas size: {st.session_state.canvas_size[0]}×{st.session_state.canv
 
 # Step 2: Upload Base Image
 st.header("2️⃣ Upload Base Template Image (Optional)")
-base_file = st.file_uploader("Choose base image (PNG, JPG, WEBP) - will be resized to canvas", 
+base_file = st.file_uploader("Choose base image - will be resized to canvas", 
                              type=['png', 'jpg', 'jpeg', 'webp'], key="base")
 
 if base_file:
@@ -367,7 +397,6 @@ if base_file:
     st.success(f"✅ Base image loaded")
 else:
     st.session_state.base_image = None
-    st.info("No base image - will use solid color background")
 
 # Step 3: Upload CSV
 st.header("3️⃣ Upload Product CSV")
@@ -390,26 +419,35 @@ if csv_file:
 if st.session_state.csv_data is not None:
     st.header("4️⃣ Image Source")
     
-    df = st.session_state.csv_data
+    col1, col2 = st.columns([1, 1])
     
-    use_search = st.checkbox("🔍 Use ImagAPI Image Search (Auto-search by product name)", 
-                            value=st.session_state.use_image_search)
-    st.session_state.use_image_search = use_search
+    with col1:
+        use_search = st.checkbox("🔍 Use ImagAPI Image Search", 
+                                value=st.session_state.use_image_search)
+        st.session_state.use_image_search = use_search
+    
+    with col2:
+        if use_search:
+            st.session_state.api_file_type = st.selectbox(
+                "Image Format", 
+                ['png', 'jpg', 'webp'],
+                index=['png', 'jpg', 'webp'].index(st.session_state.api_file_type)
+            )
     
     if use_search:
-        st.info("Will search ImagAPI using product names and auto-pick first result")
+        st.info(f"Will search ImagAPI `/products/search` with file_type={st.session_state.api_file_type}")
         
         if st.button("🔎 Test Search (First Product)"):
             with st.spinner("Searching..."):
                 first_name = df.iloc[0, st.session_state.name_col]
-                result = search_product_image(first_name)
+                result = search_product_image(first_name, st.session_state.api_file_type)
                 if result:
                     st.success(f"✅ Found: {result['url'][:60]}...")
                     thumb = load_image_from_url(result['thumbnail'] or result['url'])
                     if thumb:
-                        st.image(thumb, width=200, caption="First search result")
+                        st.image(thumb, width=200, caption="First result")
                 else:
-                    st.error("❌ No images found. Try different search term.")
+                    st.error("❌ No images found")
 
 # Step 5: Configure Columns
 if st.session_state.csv_data is not None:
@@ -429,7 +467,7 @@ if st.session_state.csv_data is not None:
             index=min(st.session_state.name_col, num_cols-1)
         )
         sample = df.iloc[0, st.session_state.name_col] if len(df) > 0 else "N/A"
-        st.caption(f"Sample: {str(sample)[:30]}...")
+        st.caption(f"Sample: {str(sample)[:40]}...")
     
     with col2:
         st.session_state.price_col = st.selectbox(
@@ -457,7 +495,7 @@ if st.session_state.csv_data is not None:
     cw, ch = st.session_state.canvas_size
     
     # Product Name Settings
-    with st.expander("🏷️ Product Name Settings", expanded=True):
+    with st.expander("🏷️ Product Name Settings (2-Line Wrap)", expanded=True):
         st.session_state.show_product_name = st.checkbox("Show Product Name", 
                                                         st.session_state.show_product_name)
         
@@ -466,7 +504,7 @@ if st.session_state.csv_data is not None:
             with col1:
                 st.session_state.name_x = st.number_input("Name X", 0, cw, st.session_state.name_x)
                 st.session_state.name_y = st.number_input("Name Y", 0, ch, st.session_state.name_y)
-                st.session_state.name_size = st.slider("Name Font Size", 10, 100, st.session_state.name_size)
+                st.session_state.name_size = st.slider("Name Font Size", 10, 80, st.session_state.name_size)
             with col2:
                 st.session_state.name_align = st.selectbox("Name Align", ["left", "center", "right"], 
                                                           index=["left", "center", "right"].index(st.session_state.name_align))
@@ -474,7 +512,9 @@ if st.session_state.csv_data is not None:
                                                            index=["normal", "bold"].index(st.session_state.name_weight))
                 st.session_state.name_color = st.color_picker("Name Color", st.session_state.name_color)
             
-            st.session_state.name_max_chars = st.slider("Max Characters", 20, 100, st.session_state.name_max_chars)
+            # Text wrapping settings
+            st.session_state.name_max_width = st.slider("Max Text Width", 200, cw-100, st.session_state.name_max_width)
+            st.session_state.name_max_lines = st.slider("Max Lines", 1, 3, st.session_state.name_max_lines)
             
             col3, col4 = st.columns(2)
             with col3:
@@ -501,8 +541,8 @@ if st.session_state.csv_data is not None:
         st.caption("Quick Position:")
         cols = st.columns(5)
         guides = [
-            ("↖️ Top Left", 50, 150),
-            ("↗️ Top Right", cw - st.session_state.product_w - 50, 150),
+            ("↖️ Top Left", 50, 180),
+            ("↗️ Top Right", cw - st.session_state.product_w - 50, 180),
             ("⬇️ Bottom Left", 50, ch - st.session_state.product_h - 150),
             ("⬇️ Bottom Right", cw - st.session_state.product_w - 50, ch - st.session_state.product_h - 150),
             ("⭕ Center", cw//2 - st.session_state.product_w//2, ch//2 - st.session_state.product_h//2),
@@ -554,7 +594,7 @@ if st.session_state.csv_data is not None:
             # Get image
             if st.session_state.use_image_search:
                 with st.spinner("Searching image..."):
-                    result = search_product_image(name)
+                    result = search_product_image(name, st.session_state.api_file_type)
                     img_url = result['url'] if result else None
             else:
                 img_url = row.iloc[st.session_state.image_col]
@@ -568,7 +608,7 @@ if st.session_state.csv_data is not None:
             config = {k: v for k, v in st.session_state.items() if k in [
                 'show_product_name', 'name_x', 'name_y', 'name_size', 'name_color',
                 'name_align', 'name_weight', 'name_bg', 'name_bg_color', 'name_padding',
-                'name_radius', 'name_shadow', 'name_max_chars',
+                'name_radius', 'name_shadow', 'name_max_width', 'name_max_lines',
                 'product_x', 'product_y', 'product_w', 'product_h', 'product_radius',
                 'price_x', 'price_y', 'price_size', 'price_color', 'price_align',
                 'price_weight', 'price_bg', 'price_bg_color', 'price_padding',
@@ -592,7 +632,7 @@ if st.session_state.csv_data is not None:
         config = {k: v for k, v in st.session_state.items() if k in [
             'show_product_name', 'name_x', 'name_y', 'name_size', 'name_color',
             'name_align', 'name_weight', 'name_bg', 'name_bg_color', 'name_padding',
-            'name_radius', 'name_shadow', 'name_max_chars',
+            'name_radius', 'name_shadow', 'name_max_width', 'name_max_lines',
             'product_x', 'product_y', 'product_w', 'product_h', 'product_radius',
             'price_x', 'price_y', 'price_size', 'price_color', 'price_align',
             'price_weight', 'price_bg', 'price_bg_color', 'price_padding',
@@ -610,7 +650,7 @@ if st.session_state.csv_data is not None:
             
             # Get image
             if st.session_state.use_image_search:
-                result = search_product_image(name)
+                result = search_product_image(name, st.session_state.api_file_type)
                 img_url = result['url'] if result else None
                 search_urls.append(img_url if img_url else "")
             else:
@@ -636,7 +676,7 @@ if st.session_state.csv_data is not None:
         st.session_state.generated_ads = generated
         st.session_state.csv_data = df
         
-        st.success(f"✅ Generated {len(generated)} ads at {st.session_state.canvas_size[0]}×{st.session_state.canvas_size[1]}px!")
+        st.success(f"✅ Generated {len(generated)} ads!")
         
         # Downloads
         col1, col2, col3 = st.columns(3)
@@ -656,7 +696,7 @@ if st.session_state.csv_data is not None:
             st.download_button(
                 "📄 Download Updated CSV",
                 csv_data,
-                f"products_{st.session_state.canvas_size[0]}x{st.session_state.canvas_size[1]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                f"products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 "text/csv",
                 use_container_width=True
             )
