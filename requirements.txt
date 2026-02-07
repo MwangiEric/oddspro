@@ -12,3 +12,4 @@ moviepy
 lxml
 cairosvg
 cairoffi
+libcairo2
