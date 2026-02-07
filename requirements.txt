@@ -11,3 +11,4 @@ pyperclip
 moviepy
 lxml
 cairosvg
+cairoffi
