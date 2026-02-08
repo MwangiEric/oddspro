@@ -1,932 +1,847 @@
-# polotno_full_element_editor.py
 import streamlit as st
-import json
-import requests
-import base64
-import re
-import math
-import hashlib
-from functools import lru_cache
-from PIL import Image, ImageDraw, ImageFont, ImageColor, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageColor
 from io import BytesIO
 import os
+import requests
+import pandas as pd
 from datetime import datetime
+import zipfile
+import textwrap
+import json
+import re
 
-# Optional: real SVG rendering
-try:
-    import cairosvg
-    CAIROSVG_AVAILABLE = True
-except ImportError:
-    CAIROSVG_AVAILABLE = False
+st.set_page_config(page_title="Bulk Ad Generator", layout="wide")
 
-st.set_page_config(page_title="Polotno to PIL Converter", layout="wide")
+# API Configuration
+IMAGAPI_BASE = "https://imagapi.vercel.app/api/v1"
 
-# ───────────────────────────────────────────────
-# Caching Configuration
-# ───────────────────────────────────────────────
+# Social Media Presets
+SOCIAL_PRESETS = {
+    "Instagram Post (Square)": (1080, 1080),
+    "Instagram Story": (1080, 1920),
+    "Instagram Reel": (1080, 1920),
+    "Facebook Post": (1200, 630),
+    "Facebook Story": (1080, 1920),
+    "WhatsApp Status": (1080, 1920),
+    "Twitter/X Post": (1200, 675),
+    "LinkedIn Post": (1200, 627),
+    "Pinterest Pin": (1000, 1500),
+    "YouTube Thumbnail": (1280, 720),
+    "Custom": None
+}
 
-@st.cache_data(ttl=3600)
-def load_image_cached(src, target_w=None, target_h=None, color_replacements_json=None):
-    """Cached image loading with hash-based key"""
-    color_replacements = json.loads(color_replacements_json) if color_replacements_json else None
-    return load_image_internal(src, target_w, target_h, color_replacements)
-
-@st.cache_data(ttl=3600)
-def render_svg_cached(svg_hash, w=None, h=None, color_replacements_json=None):
-    """Cached SVG rendering"""
-    color_replacements = json.loads(color_replacements_json) if color_replacements_json else None
-    # svg_content would need to be stored/retrieved - for now, skip caching of SVG content
-    return None
-
-@st.cache_data(ttl=7200)
-def get_font_cached(size, family, weight, style):
-    """Cached font loading"""
-    return get_font_internal(size, family, weight, style)
-
-@st.cache_data(ttl=300)
-def render_polotno_cached(json_hash, overrides_json):
-    """Cache rendered images based on JSON content hash"""
-    # This is a placeholder - actual implementation would require storing images
-    pass
-
-# ───────────────────────────────────────────────
-# Session State
-# ───────────────────────────────────────────────
+# Session state initialization
 defaults = {
-    'original_json': None,
-    'working_json': None,
-    'rendered_image': None,
-    'product_name': "SAMSUNG S25",
-    'product_image_url': "",
-    'price': "99,999",
-    'background_url': "",
-    'transparent_bg': False,
-    'font_cache': {},
-    'image_cache': {}
+    'base_image': None,
+    'csv_data': None,
+    'generated_ads': [],
+    'canvas_size': (1080, 1080),
+    'canvas_preset': "Instagram Post (Square)",
+    'name_col': 0,
+    'price_col': 1,
+    'image_col': 2,
+    'use_image_search': False,
+    'api_file_type': 'png',
+    'polotno_template': None,
+    'polotno_fields': {},
+    'use_polotno': False,
+    'extracted_name': None,  # Store extracted name from first row
 }
 
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ───────────────────────────────────────────────
-# Robust Dimension Parsing
-# ───────────────────────────────────────────────
+def extract_product_name(full_name):
+    """Extract product name (text before first ' - ')"""
+    if not full_name or pd.isna(full_name):
+        return ""
+    text = str(full_name).strip()
+    # Split on " - " and take first part
+    parts = text.split(' - ', 1)
+    return parts[0].strip()
 
-def parse_dimension(val, default=0):
-    """Safely parse dimension values"""
-    if val is None:
-        return default
-    if isinstance(val, str):
-        val = val.strip().lower()
-        if val in ('auto', '', 'none', 'null', 'undefined'):
-            return default
-        val = val.replace('%', '').replace('px', '').strip()
-        try:
-            return float(val)
-        except ValueError:
-            return default
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return default
-
-def safe_int(val, default=0):
-    """Convert to int with safety checks"""
-    dim = parse_dimension(val, default)
-    return max(0, int(dim))
-
-def safe_float(val, default=0.0):
-    """Convert to float with safety checks"""
-    dim = parse_dimension(val, default)
-    return float(dim)
-
-# ───────────────────────────────────────────────
-# Color Handling
-# ───────────────────────────────────────────────
-
-def parse_color(color_str, default=(0, 0, 0, 255)):
-    """Parse color to RGBA tuple"""
-    if not color_str or color_str == 'transparent':
-        return (0, 0, 0, 0)
-    try:
-        # Handle rgba(r,g,b,a) format
-        if isinstance(color_str, str) and 'rgba' in color_str:
-            nums = re.findall(r"[\d.]+", color_str)
-            if len(nums) >= 3:
-                r = int(float(nums[0]))
-                g = int(float(nums[1]))
-                b = int(float(nums[2]))
-                a = int(float(nums[3]) * 255) if len(nums) >= 4 else 255
-                return (r, g, b, a)
-        # Handle rgb(r,g,b) format
-        elif isinstance(color_str, str) and color_str.startswith('rgb('):
-            nums = re.findall(r"[\d.]+", color_str)
-            if len(nums) >= 3:
-                return (int(float(nums[0])), int(float(nums[1])), int(float(nums[2])), 255)
-        
-        # Try PIL ImageColor
-        result = ImageColor.getrgb(color_str)
-        if len(result) == 3:
-            return (result[0], result[1], result[2], 255)
-        return result
-    except:
-        pass
-    
-    # Fallback regex
-    numbers = re.findall(r"[\d.]+", str(color_str))
-    if len(numbers) >= 3:
-        r = int(float(numbers[0]))
-        g = int(float(numbers[1]))
-        b = int(float(numbers[2]))
-        a = int(float(numbers[3]) * 255) if len(numbers) >= 4 else 255
-        return (r, g, b, a)
-    
-    return default
-
-def replace_svg_colors(svg_content, color_replacements):
-    """Replace colors in SVG content based on colorsReplace mapping"""
-    if not color_replacements or not svg_content:
-        return svg_content
-    
-    modified_svg = svg_content
-    for old_color, new_color in color_replacements.items():
-        rgb = parse_color(new_color)
-        if len(rgb) == 4:
-            r, g, b, a = rgb
-            new_color_str = f"rgba({r},{g},{b},{a/255:.2f})"
-        else:
-            r, g, b = rgb
-            new_color_str = f"rgb({r},{g},{b})"
-        
-        modified_svg = modified_svg.replace(old_color, new_color_str)
-        modified_svg = modified_svg.replace(old_color.replace(' ', ''), new_color_str)
-    
-    return modified_svg
-
-# ───────────────────────────────────────────────
-# Image & SVG Loading (Internal - not cached)
-# ───────────────────────────────────────────────
-
-def load_image_internal(src, target_w=None, target_h=None, color_replacements=None):
-    """Internal image loading function"""
-    if not src or not isinstance(src, str):
-        return None
-    
-    target_w = safe_int(target_w) if target_w else None
-    target_h = safe_int(target_h) if target_h else None
-    
-    try:
-        # SVG handling
-        if 'svg' in src.lower() or src.startswith('data:image/svg'):
-            return render_svg_internal(src, target_w, target_h, color_replacements)
-
-        # Data URI
-        if src.startswith('data:image'):
-            if ',' in src:
-                _, encoded = src.split(',', 1)
-                data = base64.b64decode(encoded)
-            else:
-                return None
-            
-            # Check if it's actually an SVG disguised as data URI
-            if 'svg' in src.lower():
-                svg_data = data.decode('utf-8', errors='ignore')
-                return render_svg_internal(svg_data, target_w, target_h, color_replacements)
-            
-            img = Image.open(BytesIO(data)).convert('RGBA')
-            if target_w and target_h:
-                img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-            return img
-
-        # URL
-        if src.startswith(('http://', 'https://')):
-            r = requests.get(src, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
-            r.raise_for_status()
-            content_type = r.headers.get('content-type', '')
-            
-            if 'svg' in content_type or src.endswith('.svg'):
-                return render_svg_internal(r.content, target_w, target_h, color_replacements)
-            
-            img = Image.open(BytesIO(r.content)).convert('RGBA')
-            if target_w and target_h:
-                img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-            return img
-
-    except Exception as e:
-        st.warning(f"Load failed: {str(e)[:100]}")
-    return None
-
-def load_image(src, target_w=None, target_h=None, color_replacements=None):
-    """Public interface with caching"""
-    # Create a cache key from parameters
-    color_json = json.dumps(color_replacements, sort_keys=True) if color_replacements else None
-    return load_image_cached(src, target_w, target_h, color_json)
-
-def render_svg_internal(svg_input, w=None, h=None, color_replacements=None):
-    """Internal SVG rendering"""
-    if not CAIROSVG_AVAILABLE:
-        w = safe_int(w, 200)
-        h = safe_int(h, 200)
-        return placeholder_image(w, h, "SVG")
-    
-    w = safe_int(w) if w else None
-    h = safe_int(h) if h else None
-    
-    try:
-        # Extract SVG content
-        if isinstance(svg_input, str):
-            if svg_input.startswith('data:image/svg'):
-                _, encoded = svg_input.split(',', 1)
-                if 'base64' in svg_input:
-                    svg_bytes = base64.b64decode(encoded)
-                    svg_content = svg_bytes.decode('utf-8', errors='ignore')
-                else:
-                    svg_content = encoded
-            else:
-                svg_content = svg_input
-        else:
-            svg_content = svg_input.decode('utf-8', errors='ignore') if isinstance(svg_input, bytes) else str(svg_input)
-        
-        # Apply color replacements
-        if color_replacements:
-            svg_content = replace_svg_colors(svg_content, color_replacements)
-        
-        # Render with cairosvg
-        kwargs = {'bytestring': svg_content.encode('utf-8'), 'scale': 2.0}
-        if w and w > 0:
-            kwargs['output_width'] = w
-        if h and h > 0:
-            kwargs['output_height'] = h
-            
-        png = cairosvg.svg2png(**kwargs)
-        return Image.open(BytesIO(png)).convert('RGBA')
-    except Exception as e:
-        w = safe_int(w, 200)
-        h = safe_int(h, 200)
-        return placeholder_image(w, h, "SVG Error")
-
-def render_svg(svg_input, w=None, h=None, color_replacements=None):
-    """Public interface"""
-    return render_svg_internal(svg_input, w, h, color_replacements)
-
-def placeholder_image(w, h, text=""):
-    """Create placeholder with validated dimensions"""
-    w = max(safe_int(w, 200), 10)
-    h = max(safe_int(h, 200), 10)
-    
-    img = Image.new('RGBA', (w, h), (60, 60, 60, 180))
-    draw = ImageDraw.Draw(img)
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", max(10, min(20, w//10)))
-    except:
-        font = ImageFont.load_default()
-    
-    bbox = draw.textbbox((0,0), text, font=font)
-    tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-    draw.text(((w-tw)//2, (h-th)//2), text, fill=(220,220,220), font=font)
-    return img
-
-# ───────────────────────────────────────────────
-# Font Loading System
-# ───────────────────────────────────────────────
-
-def get_font_internal(size, family='Poppins', weight='normal', style='normal'):
-    """Internal font loading"""
-    size = safe_int(size, 32)
-    font = None
-    font_paths = []
-    
-    # Map weight to font file
-    weight_map = {
-        'normal': ['poppins_regular.ttf', 'DejaVuSans.ttf', 'Arial.ttf'],
-        'regular': ['poppins_regular.ttf', 'DejaVuSans.ttf', 'Arial.ttf'],
-        'bold': ['poppins_bold.ttf', 'DejaVuSans-Bold.ttf', 'Arial_Bold.ttf'],
-        'semibold': ['poppins_semi_bold.ttf', 'DejaVuSans-Bold.ttf'],
-        'semi-bold': ['poppins_semi_bold.ttf', 'DejaVuSans-Bold.ttf'],
-        'italic': ['poppins_regular.ttf', 'DejaVuSans.ttf']
+def parse_polotno_json(json_data):
+    """Parse Polotno JSON and extract placeholder fields"""
+    fields = {
+        'product_name': None,
+        'price': None,
+        'product_image': None
     }
     
-    font_names = weight_map.get(weight.lower(), weight_map['normal'])
-    
-    # Check in fonts directory first
-    fonts_dir = "assets/fonts"
-    for name in font_names:
-        path = os.path.join(fonts_dir, name)
-        if os.path.exists(path):
-            try:
-                font = ImageFont.truetype(path, size)
-                break
-            except:
-                pass
-    
-    # Fallback to system fonts
-    if font is None:
-        system_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "C:/Windows/Fonts/arial.ttf",
-            "C:/Windows/Fonts/arialbd.ttf"
-        ]
-        for path in system_paths:
-            if os.path.exists(path):
-                try:
-                    font = ImageFont.truetype(path, size)
-                    break
-                except:
-                    pass
-    
-    if font is None:
-        font = ImageFont.load_default()
-    
-    return font
-
-def get_font(size, family='Poppins', weight='normal', style='normal'):
-    """Public interface with caching"""
-    return get_font_cached(size, family, weight, style)
-
-# ───────────────────────────────────────────────
-# Shape Drawing Helpers
-# ───────────────────────────────────────────────
-
-def draw_shape(draw, x, y, w, h, subtype, fill, stroke, stroke_w, radius=0):
-    """Draw all shape types"""
-    
-    if subtype in ('rect', 'rectangle'):
-        if radius > 0:
-            if stroke and stroke[3] > 0:
-                draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, 
-                                     fill=fill, outline=stroke, width=int(stroke_w))
-            else:
-                draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, fill=fill)
+    try:
+        if isinstance(json_data, str):
+            data = json.loads(json_data)
         else:
-            if stroke and stroke[3] > 0:
-                draw.rectangle([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w))
-            else:
-                draw.rectangle([x, y, x+w, y+h], fill=fill)
-                
-    elif subtype in ('circle', 'ellipse'):
-        if stroke and stroke[3] > 0:
-            draw.ellipse([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w))
-        else:
-            draw.ellipse([x, y, x+w, y+h], fill=fill)
+            data = json_data
             
-    elif subtype == 'rightTriangle':
-        points = [(x, y), (x+w, y), (x, y+h)]
-        draw.polygon(points, fill=fill, outline=stroke)
+        pages = data.get('pages', [])
+        if not pages:
+            return fields
+            
+        # Look through all elements in all pages
+        for page in pages:
+            elements = page.get('children', [])
+            for el in elements:
+                el_type = el.get('type', '')
+                name = el.get('name', '')
+                
+                # Check for text placeholders
+                if el_type == 'text':
+                    if name == '{product_name}' and not fields['product_name']:
+                        fields['product_name'] = {
+                            'x': el.get('x', 0),
+                            'y': el.get('y', 0),
+                            'width': el.get('width', 200),
+                            'height': el.get('height', 50),
+                            'fontSize': el.get('fontSize', 24),
+                            'fontFamily': el.get('fontFamily', 'Arial'),
+                            'fill': el.get('fill', '#000000'),
+                            'align': el.get('align', 'left')
+                        }
+                    elif name == '{price}' and not fields['price']:
+                        fields['price'] = {
+                            'x': el.get('x', 0),
+                            'y': el.get('y', 0),
+                            'width': el.get('width', 200),
+                            'height': el.get('height', 50),
+                            'fontSize': el.get('fontSize', 36),
+                            'fontFamily': el.get('fontFamily', 'Arial'),
+                            'fill': el.get('fill', '#000000'),
+                            'align': el.get('align', 'left')
+                        }
+                
+                # Check for image placeholder
+                elif el_type == 'image' and name == '{product_image_placeholder}':
+                    fields['product_image'] = {
+                        'x': el.get('x', 0),
+                        'y': el.get('y', 0),
+                        'width': el.get('width', 400),
+                        'height': el.get('height', 400),
+                        'borderRadius': el.get('borderRadius', 0)
+                    }
         
-    elif subtype == 'leftTriangle':
-        points = [(x, y), (x+w, y), (x+w, y+h)]
-        draw.polygon(points, fill=fill, outline=stroke)
-        
-    elif subtype in ('topTriangle', 'triangle'):
-        points = [(x+w/2, y), (x, y+h), (x+w, y+h)]
-        draw.polygon(points, fill=fill, outline=stroke)
-        
-    elif subtype == 'bottomTriangle':
-        points = [(x, y), (x+w, y), (x+w/2, y+h)]
-        draw.polygon(points, fill=fill, outline=stroke)
-        
-    elif subtype in ('diamond', 'rhombus'):
-        points = [(x+w/2, y), (x+w, y+h/2), (x+w/2, y+h), (x, y+h/2)]
-        draw.polygon(points, fill=fill, outline=stroke)
+        return fields
+    except Exception as e:
+        st.error(f"Error parsing Polotno JSON: {e}")
+        return fields
 
-def draw_star(draw, cx, cy, outer_r, inner_r, num_points, fill, rotation=0):
-    """Draw star polygon"""
-    points = []
-    for i in range(num_points * 2):
-        angle = (i * math.pi / num_points) - (math.pi / 2) + math.radians(rotation)
-        r = outer_r if i % 2 == 0 else inner_r
-        px = cx + r * math.cos(angle)
-        py = cy + r * math.sin(angle)
-        points.append((px, py))
-    draw.polygon(points, fill=fill)
-
-def draw_polygon(draw, cx, cy, w, h, sides, fill, rotation=0):
-    """Draw regular polygon"""
-    points = []
-    radius = min(w, h) / 2
-    for i in range(sides):
-        angle = (i * 2 * math.pi / sides) - (math.pi / 2) + math.radians(rotation)
-        px = cx + radius * math.cos(angle)
-        py = cy + radius * math.sin(angle)
-        points.append((px, py))
-    draw.polygon(points, fill=fill)
-
-def draw_arrow(draw, x, y, w, h, direction, fill, stroke, stroke_w):
-    """Draw arrow shape"""
-    if direction == 'right':
-        points = [(x, y+h/3), (x+w/2, y+h/3), (x+w/2, y), (x+w, y+h/2), 
-                  (x+w/2, y+h), (x+w/2, y+2*h/3), (x, y+2*h/3)]
-    elif direction == 'left':
-        points = [(x+w, y+h/3), (x+w/2, y+h/3), (x+w/2, y), (x, y+h/2),
-                  (x+w/2, y+h), (x+w/2, y+2*h/3), (x+w, y+2*h/3)]
-    elif direction == 'up':
-        points = [(x+w/3, y+h), (x+w/3, y+h/2), (x, y+h/2), 
-                  (x+w/2, y), (x+w, y+h/2), (x+2*w/3, y+h/2), (x+2*w/3, y+h)]
-    else:  # down
-        points = [(x+w/3, y), (x+w/3, y+h/2), (x, y+h/2),
-                  (x+w/2, y+h), (x+w, y+h/2), (x+2*w/3, y+h/2), (x+2*w/3, y)]
+def search_product_image(query, file_type='png'):
+    """Search for product image using ImagAPI"""
+    if not query or pd.isna(query):
+        return None
     
-    draw.polygon(points, fill=fill, outline=stroke)
-
-# ───────────────────────────────────────────────
-# Core Rendering Functions
-# ───────────────────────────────────────────────
-
-def apply_opacity(img, opacity):
-    """Apply opacity to image"""
-    opacity = safe_float(opacity, 1.0)
-    if opacity >= 1.0:
-        return img
+    # Use extracted name for search
+    search_query = extract_product_name(query)
     
-    if img.mode != 'RGBA':
-        img = img.convert('RGBA')
-    
-    alpha = img.split()[3]
-    alpha = alpha.point(lambda p: int(p * opacity))
-    img.putalpha(alpha)
-    return img
-
-def rotate_around_center(img, angle):
-    """Rotate image around its center"""
-    angle = safe_float(angle)
-    if angle == 0:
-        return img
-    
-    if img.width <= 0 or img.height <= 0:
-        return img
+    try:
+        url = f"{IMAGAPI_BASE}/products/search"
+        params = {
+            "q": str(search_query)[:100],
+            "file_type": file_type,
+            "limit": 5
+        }
         
-    return img.rotate(-angle, expand=True, resample=Image.Resampling.BICUBIC)
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        images = data.get("images", []) or data.get("results", []) or []
+        
+        if images and len(images) > 0:
+            for img in images:
+                image_url = (img.get('url') or 
+                            img.get('image_url') or 
+                            img.get('src') or
+                            img.get('link'))
+                
+                if image_url:
+                    return {
+                        'url': image_url,
+                        'thumbnail': img.get('thumbnail') or image_url,
+                        'source': img.get('source', 'imagapi')
+                    }
+        return None
+    except Exception as e:
+        st.warning(f"Search failed: {str(e)[:80]}")
+        return None
 
-def render_text_element(draw, el, overrides, canvas_w, canvas_h):
-    """Render text element with multiline support"""
-    text = el.get('text', '')
+def get_font(size, weight='normal', family='Arial'):
+    """Load font with fallback"""
+    try:
+        # Try to match font family
+        font_map = {
+            'Arial': ['arial.ttf', 'arialbd.ttf'],
+            'Helvetica': ['Helvetica.ttc'],
+            'DejaVu': ['DejaVuSans.ttf', 'DejaVuSans-Bold.ttf'],
+            'Roboto': ['Roboto-Regular.ttf', 'Roboto-Bold.ttf']
+        }
+        
+        if weight == 'bold':
+            paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "C:/Windows/Fonts/arialbd.ttf",
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+            ]
+        else:
+            paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "C:/Windows/Fonts/arial.ttf",
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+            ]
+        
+        for path in paths:
+            if os.path.exists(path):
+                return ImageFont.truetype(path, size)
+    except:
+        pass
+    return ImageFont.load_default()
+
+def load_image_from_url(url):
+    """Load image from URL with timeout"""
+    if not url or pd.isna(url):
+        return None
+    try:
+        url = str(url).strip()
+        if url.startswith('//'):
+            url = 'https:' + url
+        elif url.startswith('/'):
+            url = 'https://imagapi.vercel.app' + url
+            
+        response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+        response.raise_for_status()
+        return Image.open(BytesIO(response.content)).convert('RGBA')
+    except Exception as e:
+        return None
+
+def wrap_text_to_lines(text, font, max_width, max_lines=2):
+    """Wrap text to fit within max_width"""
     if not text:
-        return
+        return [""]
     
-    # Apply overrides
-    is_price = any(marker in text for marker in ['KES', 'ksh', '$', '€', '£', ',']) and any(c.isdigit() for c in text)
-    is_product_name = len(text) > 3 and not is_price and safe_int(el.get('fontSize'), 0) > 25
+    text = str(text).strip()
+    bbox = font.getbbox(text)
+    if bbox[2] - bbox[0] <= max_width:
+        return [text]
     
-    if is_product_name and overrides.get('product_name'):
-        text = overrides['product_name']
-    elif is_price and overrides.get('price'):
-        text = overrides['price']
+    avg_char_width = (bbox[2] - bbox[0]) / len(text) if len(text) > 0 else 10
+    chars_per_line = int(max_width / avg_char_width) if avg_char_width > 0 else 20
     
-    # Get styling
-    font_size = safe_int(el.get('fontSize'), 32)
-    font_family = el.get('fontFamily', 'Poppins')
-    font_style = el.get('fontStyle', 'normal')
-    font_weight = el.get('fontWeight', 'normal')
-    color = parse_color(el.get('fill', 'black'))
-    color = (color[0], color[1], color[2], int(color[3] * safe_float(el.get('opacity'), 1)))
+    wrapped = textwrap.wrap(text, width=max(chars_per_line, 10), 
+                           break_long_words=True, break_on_hyphens=True)
     
-    # Position
-    x = safe_float(el.get('x'))
-    y = safe_float(el.get('y'))
-    w = safe_float(el.get('width'))
-    h = safe_float(el.get('height'))
+    if len(wrapped) > max_lines:
+        result = wrapped[:max_lines-1]
+        last_line = wrapped[max_lines-1]
+        while len(last_line) > 3:
+            test_line = last_line + "..."
+            bbox = font.getbbox(test_line)
+            if bbox[2] - bbox[0] <= max_width:
+                result.append(test_line)
+                break
+            last_line = last_line[:-1]
+        else:
+            result.append("...")
+        return result
     
-    if w <= 0 or h <= 0:
-        return
+    return wrapped
+
+def draw_text_block(draw, lines, x, y, font, color, align='left', 
+                    bg=False, bg_color=(0,0,0), padding=10, radius=8, 
+                    shadow=False, line_height=1.2):
+    """Draw multiple lines of text with styling"""
+    if not lines:
+        return y
     
-    rotation = safe_float(el.get('rotation'))
-    line_height = safe_float(el.get('lineHeight'), 1.2)
-    letter_spacing = safe_float(el.get('letterSpacing', 0))
-    
-    # Load font
-    font = get_font(font_size, font_family, font_weight, font_style)
-    
-    # Handle multiline text
-    lines = text.split('\n')
-    
-    # Calculate total height
+    max_width = 0
     total_height = 0
     line_heights = []
+    
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font)
-        lh = bbox[3] - bbox[1]
-        line_heights.append(lh)
-        total_height += lh * line_height
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        max_width = max(max_width, w)
+        line_heights.append(h)
+        total_height += h * line_height
     
-    # Vertical alignment
-    vertical_align = el.get('verticalAlign', 'top')
+    first_line_h = line_heights[0] if line_heights else font.size
+    y = y - first_line_h + font.size
+    
+    if bg:
+        bg_x = x
+        if align == 'center':
+            bg_x = x - max_width // 2 - padding
+        elif align == 'right':
+            bg_x = x - max_width - padding
+        
+        bg_rect = [
+            bg_x,
+            y - padding,
+            bg_x + max_width + padding * 2,
+            y + total_height + padding
+        ]
+        draw.rounded_rectangle(bg_rect, radius=radius, fill=bg_color)
+    
     current_y = y
-    if vertical_align == 'middle':
-        current_y = y + (h - total_height) / 2
-    elif vertical_align == 'bottom':
-        current_y = y + h - total_height
-    
-    # Draw each line
     for i, line in enumerate(lines):
         bbox = draw.textbbox((0, 0), line, font=font)
-        text_w = bbox[2] - bbox[0] + (len(line) * letter_spacing)
-        text_h = line_heights[i]
+        line_w = bbox[2] - bbox[0]
         
-        # Horizontal alignment
-        align = el.get('align', 'left')
+        line_x = x
         if align == 'center':
-            line_x = x + (w - text_w) / 2
+            line_x = x - line_w // 2
         elif align == 'right':
-            line_x = x + w - text_w
-        else:
-            line_x = x
+            line_x = x - line_w
         
-        # Shadow
-        shadow = el.get('shadow')
-        if shadow and shadow.get('enabled', False):
-            sx = line_x + safe_float(shadow.get('x', 2))
-            sy = current_y + safe_float(shadow.get('y', 2))
-            shadow_color = parse_color(shadow.get('color', 'rgba(0,0,0,0.5)'))
-            draw.text((sx, sy), line, fill=shadow_color, font=font)
+        if shadow:
+            draw.text((line_x + 2, current_y + 2), line, font=font, fill='black')
         
-        # Apply letter spacing by drawing character by character if needed
-        if letter_spacing > 0:
-            char_x = line_x
-            for char in line:
-                draw.text((char_x, current_y), char, fill=color, font=font)
-                char_bbox = draw.textbbox((0, 0), char, font=font)
-                char_w = char_bbox[2] - char_bbox[0]
-                char_x += char_w + letter_spacing
-        else:
-            draw.text((line_x, current_y), line, fill=color, font=font)
-        
-        current_y += text_h * line_height
+        draw.text((line_x, current_y), line, font=font, fill=color)
+        current_y += line_heights[i] * line_height
+    
+    return current_y
 
-def render_image_element(canvas, el, overrides):
-    """Render image/svg element - returns modified canvas"""
-    src = el.get('src', '')
-    if not src:
-        return canvas
+def render_single_ad(canvas_size, base_image, product_image, product_name, price, config):
+    """Render a single ad with given parameters"""
+    canvas = Image.new('RGBA', canvas_size, (255, 255, 255, 255))
     
-    x = safe_float(el.get('x'))
-    y = safe_float(el.get('y'))
-    w = safe_float(el.get('width'))
-    h = safe_float(el.get('height'))
+    # Paste base image
+    if base_image:
+        bg = base_image.copy().resize(canvas_size, Image.Resampling.LANCZOS)
+        canvas.paste(bg, (0, 0), bg)
     
-    if w <= 0 or h <= 0:
-        return canvas
+    draw = ImageDraw.Draw(canvas)
     
-    rotation = safe_float(el.get('rotation'))
-    opacity = safe_float(el.get('opacity'), 1.0)
-    flip_x = el.get('flipX', False)
-    flip_y = el.get('flipY', False)
-    corner_radius = safe_float(el.get('cornerRadius', 0))
-    color_replacements = el.get('colorsReplace')
+    # Check if using Polotno template
+    if config.get('use_polotno') and config.get('polotno_fields'):
+        fields = config['polotno_fields']
+        
+        # Draw Product Name
+        if fields.get('product_name') and product_name and config.get('show_product_name', True):
+            field = fields['product_name']
+            name_font = get_font(field.get('fontSize', 32), 'bold', field.get('fontFamily', 'Arial'))
+            name_color = field.get('fill', '#FFFFFF')
+            if isinstance(name_color, str):
+                name_color = ImageColor.getrgb(name_color)
+            
+            max_width = field.get('width', 800)
+            wrapped_lines = wrap_text_to_lines(
+                str(product_name), 
+                name_font, 
+                max_width,
+                config.get('name_max_lines', 2)
+            )
+            
+            # Simple text drawing for Polotno (no background/shadow for now)
+            x, y = field.get('x', 100), field.get('y', 100)
+            align = field.get('align', 'left')
+            
+            current_y = y
+            for line in wrapped_lines:
+                bbox = draw.textbbox((0, 0), line, font=name_font)
+                line_w = bbox[2] - bbox[0]
+                
+                line_x = x
+                if align == 'center':
+                    line_x = x - line_w // 2
+                elif align == 'right':
+                    line_x = x - line_w
+                
+                draw.text((line_x, current_y), line, font=name_font, fill=name_color)
+                current_y += name_font.size * 1.2
+        
+        # Draw Price
+        if fields.get('price') and price:
+            field = fields['price']
+            price_font = get_font(field.get('fontSize', 48), 'bold', field.get('fontFamily', 'Arial'))
+            price_color = field.get('fill', '#FFFFFF')
+            if isinstance(price_color, str):
+                price_color = ImageColor.getrgb(price_color)
+            
+            x, y = field.get('x', 100), field.get('y', 650)
+            align = field.get('align', 'left')
+            price_str = str(price)
+            lines = price_str.split('\n')
+            
+            current_y = y
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=price_font)
+                line_w = bbox[2] - bbox[0]
+                
+                line_x = x
+                if align == 'center':
+                    line_x = x - line_w // 2
+                elif align == 'right':
+                    line_x = x - line_w
+                
+                draw.text((line_x, current_y), line, font=price_font, fill=price_color)
+                current_y += price_font.size * 1.2
+        
+        # Paste Product Image
+        if fields.get('product_image') and product_image is not None:
+            field = fields['product_image']
+            img = product_image.copy()
+            
+            pw = int(field.get('width', 400))
+            ph = int(field.get('height', 400))
+            img = img.resize((pw, ph), Image.Resampling.LANCZOS)
+            
+            radius = field.get('borderRadius', 0)
+            if radius > 0:
+                mask = Image.new('L', (pw, ph), 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.rounded_rectangle([0, 0, pw, ph], radius=int(radius), fill=255)
+                img.putalpha(mask)
+            
+            px = int(field.get('x', 100))
+            py = int(field.get('y', 200))
+            canvas.paste(img, (px, py), img)
     
-    # Check if this is main product image
-    is_main_product = w > 200 and h > 200 and el.get('type') == 'image'
-    
-    if is_main_product and overrides.get('product_image'):
-        src = overrides['product_image']
-    
-    # Load image
-    img = load_image(src, int(w), int(h), color_replacements)
-    if not img:
-        # Draw placeholder
-        draw = ImageDraw.Draw(canvas)
-        draw.rectangle([x, y, x+w, y+h], outline='red', width=3)
-        return canvas
-    
-    # Apply flips
-    if flip_x:
-        img = img.transpose(Image.Flip.LEFT_RIGHT)
-    if flip_y:
-        img = img.transpose(Image.Flip.TOP_BOTTOM)
-    
-    # Apply rotation
-    if rotation != 0:
-        img = rotate_around_center(img, rotation)
-        new_x = x + (w - img.width) / 2
-        new_y = y + (h - img.height) / 2
     else:
-        new_x, new_y = x, y
-    
-    # Apply opacity
-    if opacity < 1.0:
-        img = apply_opacity(img, opacity)
-    
-    # Apply corner radius mask
-    if corner_radius > 0:
-        mask = Image.new('L', (img.width, img.height), 0)
-        mask_draw = ImageDraw.Draw(mask)
-        mask_draw.rounded_rectangle([0, 0, img.width, img.height], 
-                                   radius=corner_radius, fill=255)
-        img.putalpha(mask)
-    
-    # Clip to canvas bounds
-    paste_x = max(0, int(new_x))
-    paste_y = max(0, int(new_y))
-    
-    crop_left = max(0, -int(new_x))
-    crop_top = max(0, -int(new_y))
-    crop_right = min(img.width, canvas.width - paste_x + crop_left)
-    crop_bottom = min(img.height, canvas.height - paste_y + crop_top)
-    
-    if crop_left > 0 or crop_top > 0 or crop_right < img.width or crop_bottom < img.height:
-        if crop_right > crop_left and crop_bottom > crop_top:
-            img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
-    
-    if img.width > 0 and img.height > 0 and paste_x < canvas.width and paste_y < canvas.height:
-        try:
-            canvas.paste(img, (paste_x, paste_y), img)
-        except:
-            pass
+        # Legacy manual positioning
+        # Draw Product Name
+        if config.get('show_product_name') and product_name:
+            name_font = get_font(config['name_size'], config['name_weight'])
+            name_color = ImageColor.getrgb(config['name_color'])
+            name_bg_color = ImageColor.getrgb(config['name_bg_color'])
+            
+            wrapped_lines = wrap_text_to_lines(
+                str(product_name), 
+                name_font, 
+                config.get('name_max_width', canvas_size[0] - 200),
+                config.get('name_max_lines', 2)
+            )
+            
+            draw_text_block(
+                draw, wrapped_lines, 
+                config['name_x'], config['name_y'],
+                name_font, name_color, config['name_align'],
+                config['name_bg'], name_bg_color, 
+                config['name_padding'], config['name_radius'],
+                config['name_shadow'], 1.3
+            )
+        
+        # Paste Product Image
+        if product_image is not None:
+            img = product_image.copy()
+            pw = config['product_w']
+            ph = config['product_h']
+            img = img.resize((pw, ph), Image.Resampling.LANCZOS)
+            
+            if config['product_radius'] > 0:
+                mask = Image.new('L', (pw, ph), 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.rounded_rectangle([0, 0, pw, ph], 
+                                           radius=config['product_radius'], fill=255)
+                img.putalpha(mask)
+            
+            px = max(0, min(config['product_x'], canvas_size[0] - pw))
+            py = max(0, min(config['product_y'], canvas_size[1] - ph))
+            canvas.paste(img, (px, py), img)
+        
+        # Draw Price
+        if price:
+            price_font = get_font(config['price_size'], config['price_weight'])
+            price_color = ImageColor.getrgb(config['price_color'])
+            price_bg_color = ImageColor.getrgb(config['price_bg_color'])
+            
+            price_str = str(price)
+            lines = price_str.split('\n')
+            
+            draw_text_block(
+                draw, lines,
+                config['price_x'], config['price_y'],
+                price_font, price_color, config['price_align'],
+                config['price_bg'], price_bg_color,
+                config['price_padding'], config['price_radius'],
+                config['price_shadow'], config['price_line_height']
+            )
     
     return canvas
 
-def render_shape_element(draw, el):
-    """Render shape/figure element"""
-    x = safe_float(el.get('x'))
-    y = safe_float(el.get('y'))
-    w = safe_float(el.get('width'))
-    h = safe_float(el.get('height'))
+def create_zip_download(images, names):
+    """Create a ZIP file with all generated images"""
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for i, (img, name) in enumerate(zip(images, names)):
+            img_buffer = BytesIO()
+            img.save(img_buffer, format='PNG')
+            safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_name = safe_name[:50]
+            filename = f"{i+1:03d}_{safe_name}.png"
+            zip_file.writestr(filename, img_buffer.getvalue())
     
-    if w <= 0 or h <= 0:
-        return
-    
-    rotation = safe_float(el.get('rotation'))
-    opacity = safe_float(el.get('opacity'), 1.0)
-    
-    subtype = (el.get('subType') or el.get('subtype', 'rect')).lower()
-    fill = parse_color(el.get('fill', '#888888'))
-    fill = (fill[0], fill[1], fill[2], int(fill[3] * opacity))
-    
-    stroke_str = el.get('stroke', 'transparent')
-    stroke = parse_color(stroke_str) if stroke_str != 'transparent' else None
-    if stroke:
-        stroke = (stroke[0], stroke[1], stroke[2], int(stroke[3] * opacity))
-    
-    stroke_width = safe_int(el.get('strokeWidth'), 0)
-    corner_radius = safe_float(el.get('cornerRadius'), 0)
-    
-    # Draw based on type
-    if subtype in ('rect', 'rectangle', 'circle', 'rightTriangle', 'leftTriangle', 
-                   'topTriangle', 'bottomTriangle', 'triangle', 'diamond', 'rhombus'):
-        draw_shape(draw, x, y, w, h, subtype, fill, stroke, stroke_width, corner_radius)
-    
-    elif subtype == 'star':
-        cx, cy = x + w/2, y + h/2
-        outer_r = min(w, h) / 2
-        inner_r = outer_r * el.get('innerRadius', 0.5)
-        draw_star(draw, cx, cy, outer_r, inner_r, 
-                 safe_int(el.get('numPoints', 5)), fill, rotation)
-    
-    elif subtype == 'polygon':
-        cx, cy = x + w/2, y + h/2
-        draw_polygon(draw, cx, cy, w, h, 
-                    safe_int(el.get('sides', 6)), fill, rotation)
-    
-    elif subtype == 'arrow':
-        direction = el.get('direction', 'right')
-        draw_arrow(draw, x, y, w, h, direction, fill, stroke, stroke_width)
-    
-    elif subtype == 'line':
-        x1 = x + safe_float(el.get('x1', 0))
-        y1 = y + safe_float(el.get('y1', 0))
-        x2 = x + safe_float(el.get('x2', w))
-        y2 = y + safe_float(el.get('y2', h))
-        draw.line([(x1, y1), (x2, y2)], fill=stroke or fill, width=max(1, stroke_width))
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
 
-# ───────────────────────────────────────────────
-# Element Processor Class (avoids nonlocal issues)
-# ───────────────────────────────────────────────
+def get_csv_download_link(df):
+    """Generate CSV download"""
+    csv_buffer = BytesIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_buffer.seek(0)
+    return csv_buffer.getvalue()
 
-class ElementProcessor:
-    """Class to process elements without nonlocal issues"""
-    
-    def __init__(self, canvas, overrides, canvas_w, canvas_h):
-        self.canvas = canvas
-        self.overrides = overrides
-        self.canvas_w = canvas_w
-        self.canvas_h = canvas_h
-    
-    def process_element(self, el, parent_x=0, parent_y=0):
-        """Recursively process elements including groups"""
-        if not isinstance(el, dict):
-            return
-        
-        elem_type = el.get('type', '').lower()
-        x = parent_x + safe_float(el.get('x', 0))
-        y = parent_y + safe_float(el.get('y', 0))
-        
-        # Update element position for rendering
-        el_copy = el.copy()
-        el_copy['x'] = x
-        el_copy['y'] = y
-        
-        if not el.get('visible', True):
-            return
-        
-        if elem_type == 'group':
-            # Process children with offset
-            for child in el.get('children', []):
-                self.process_element(child, x, y)
-                
-        elif elem_type == 'text':
-            draw = ImageDraw.Draw(self.canvas)
-            render_text_element(draw, el_copy, self.overrides, self.canvas_w, self.canvas_h)
-        
-        elif elem_type in ('image', 'svg'):
-            self.canvas = render_image_element(self.canvas, el_copy, self.overrides)
-        
-        elif elem_type in ('figure', 'shape', 'rect', 'circle', 'star', 'polygon', 'arrow'):
-            draw = ImageDraw.Draw(self.canvas)
-            render_shape_element(draw, el_copy)
-        
-        elif elem_type == 'line':
-            draw = ImageDraw.Draw(self.canvas)
-            render_shape_element(draw, el_copy)
-
-# ───────────────────────────────────────────────
-# Main Render Function - FIXED
-# ───────────────────────────────────────────────
-
-def render_polotno(pjson: dict, overrides: dict) -> Image.Image:
-    """Main render function - reads canvas dimensions from ROOT level"""
-    
-    # Get canvas dimensions from ROOT of JSON (not from pages)
-    canvas_width = safe_int(pjson.get('width'), 1080)
-    canvas_height = safe_int(pjson.get('height'), 1920)
-    
-    pages = pjson.get('pages', [])
-    if not pages:
-        return Image.new('RGBA', (canvas_width, canvas_height), (255, 255, 255, 255))
-    
-    page = pages[0]
-    w, h = canvas_width, canvas_height
-    
-    # Create canvas
-    bg_url = overrides.get('background_url', '')
-    transparent = overrides.get('transparent_bg', False)
-    
-    if bg_url:
-        bg = load_image(bg_url, w, h)
-        if bg:
-            canvas = bg.convert('RGBA')
-        else:
-            canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0) if transparent else (255, 255, 255, 255))
-    else:
-        # Check for background in page
-        page_bg = page.get('background', 'white')
-        if isinstance(page_bg, str) and page_bg.startswith('http'):
-            bg = load_image(page_bg, w, h)
-            if bg:
-                canvas = bg.convert('RGBA')
-            else:
-                canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0) if transparent else (255, 255, 255, 255))
-        else:
-            if transparent:
-                canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-            else:
-                bg_color = parse_color(page_bg, (255, 255, 255, 255))
-                canvas = Image.new('RGBA', (w, h), bg_color)
-    
-    # Sort children by z-index
-    children = page.get('children', [])
-    children.sort(key=lambda x: safe_int(x.get('z'), 0))
-    
-    # Use class-based processor to avoid nonlocal issues
-    processor = ElementProcessor(canvas, overrides, w, h)
-    
-    for child in children:
-        try:
-            processor.process_element(child)
-        except Exception as e:
-            continue
-    
-    return processor.canvas
-
-# ───────────────────────────────────────────────
-# UI Components
-# ───────────────────────────────────────────────
-
-st.title("🎨 Polotno to PIL Converter")
-st.markdown("Convert Polotno JSON designs to high-quality images")
-
+# ==================== SIDEBAR ====================
 with st.sidebar:
-    st.header("⚙️ Settings")
-    st.session_state.transparent_bg = st.checkbox(
-        "Transparent Background", 
-        value=st.session_state.transparent_bg
-    )
-
-col_load, col_edit = st.columns([1, 1])
-
-with col_load:
-    st.subheader("📁 Load Design")
+    st.title("📦 Bulk Ad Generator")
+    st.markdown("Configure your ad generation settings here.")
     
-    uploaded = st.file_uploader("Upload Polotno .json", type=["json"])
-    raw_json = st.text_area("Or paste JSON", height=200)
+    st.header("1️⃣ Canvas Size")
+    preset = st.selectbox("Platform Preset", list(SOCIAL_PRESETS.keys()), 
+                          index=list(SOCIAL_PRESETS.keys()).index(st.session_state.canvas_preset))
     
-    if st.button("🚀 Load", type="primary", use_container_width=True):
-        content = None
-        if uploaded:
-            content = uploaded.read().decode('utf-8')
-        elif raw_json.strip():
-            content = raw_json.strip()
-        
-        if content:
-            try:
-                data = json.loads(content)
-                st.session_state.original_json = data
-                
-                # Show canvas dimensions from root
-                root_w = safe_int(data.get('width'), 0)
-                root_h = safe_int(data.get('height'), 0)
-                
-                pages = data.get('pages', [])
-                st.success(f"✅ Loaded {len(pages)} page(s) • Canvas: {root_w}×{root_h}px")
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
-
-with col_edit:
-    st.subheader("✏️ Customize")
-    
-    if st.session_state.original_json:
-        st.session_state.product_name = st.text_input(
-            "Product Name", 
-            value=st.session_state.product_name
-        )
-        st.session_state.price = st.text_input(
-            "Price", 
-            value=st.session_state.price
-        )
-        st.session_state.product_image_url = st.text_input(
-            "Product Image URL (optional)",
-            value=st.session_state.product_image_url,
-            placeholder="Leave empty to use template"
-        )
+    if preset == "Custom":
+        col1, col2 = st.columns(2)
+        with col1:
+            custom_w = st.number_input("Width", 100, 4000, st.session_state.canvas_size[0])
+        with col2:
+            custom_h = st.number_input("Height", 100, 4000, st.session_state.canvas_size[1])
+        st.session_state.canvas_size = (custom_w, custom_h)
     else:
-        st.info("Load a design first")
-
-st.markdown("---")
-
-if st.session_state.original_json:
-    col_render, col_preview = st.columns([1, 2])
+        st.session_state.canvas_size = SOCIAL_PRESETS[preset]
+        st.session_state.canvas_preset = preset
     
-    with col_render:
-        st.subheader("🎬 Render")
+    st.info(f"Canvas: {st.session_state.canvas_size[0]}×{st.session_state.canvas_size[1]}px")
+    
+    # Polotno Template Upload
+    st.header("2️⃣ Polotno Template")
+    polotno_file = st.file_uploader("Upload Polotno JSON", type=['json'], key="polotno")
+    
+    if polotno_file:
+        try:
+            json_content = json.load(polotno_file)
+            fields = parse_polotno_json(json_content)
+            st.session_state.polotno_template = json_content
+            st.session_state.polotno_fields = fields
+            st.session_state.use_polotno = True
+            
+            st.success("✅ Polotno template loaded!")
+            
+            # Show detected fields
+            with st.expander("Detected Fields"):
+                if fields['product_name']:
+                    st.write(f"📛 Product Name: x={fields['product_name']['x']:.0f}, y={fields['product_name']['y']:.0f}")
+                if fields['price']:
+                    st.write(f"💰 Price: x={fields['price']['x']:.0f}, y={fields['price']['y']:.0f}")
+                if fields['product_image']:
+                    st.write(f"🖼️ Image: x={fields['product_image']['x']:.0f}, y={fields['product_image']['y']:.0f}")
+            
+            if not any(fields.values()):
+                st.warning("⚠️ No placeholders found. Expected: {product_name}, {price}, {product_image_placeholder}")
+        except Exception as e:
+            st.error(f"Error loading Polotno file: {e}")
+            st.session_state.use_polotno = False
+    
+    # Base Image Upload (only if not using Polotno)
+    if not st.session_state.use_polotno:
+        st.header("3️⃣ Base Template")
+        base_file = st.file_uploader("Upload base image", 
+                                     type=['png', 'jpg', 'jpeg', 'webp'], key="base")
+        if base_file:
+            st.session_state.base_image = Image.open(base_file).convert('RGBA')
+            st.success("✅ Base image loaded")
+    
+    # CSV Upload
+    st.header("4️⃣ Product Data")
+    csv_file = st.file_uploader("Upload CSV", type=['csv'], key="csv")
+    
+    if csv_file:
+        try:
+            df = pd.read_csv(csv_file)
+            st.session_state.csv_data = df
+            st.success(f"✅ Loaded {len(df)} products")
+            
+            # Show extracted name example
+            if len(df) > 0:
+                sample_full = df.iloc[0, 0]  # Assume first col
+                sample_extracted = extract_product_name(sample_full)
+                st.caption(f"Name extraction: '{str(sample_full)[:30]}...' → '{sample_extracted[:30]}...'")
+        except Exception as e:
+            st.error(f"Error reading CSV: {e}")
+
+# ==================== MAIN CONTENT ====================
+st.title("📦 Bulk Ad Generator")
+st.markdown("Upload CSV with product data and generate ads for social media")
+
+# Show current configuration
+if st.session_state.use_polotno:
+    st.success("🎨 Using Polotno template for layout")
+elif st.session_state.base_image:
+    st.info("🖼️ Using uploaded base image")
+else:
+    st.info("⚪ Using blank canvas")
+
+# Column Mapping (if CSV loaded)
+if st.session_state.csv_data is not None:
+    st.header("Column Mapping")
+    
+    df = st.session_state.csv_data
+    num_cols = len(df.columns)
+    col_names = list(df.columns)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.session_state.name_col = st.selectbox(
+            "Product Name Column",
+            range(num_cols),
+            format_func=lambda i: f"{i}: {col_names[i]}",
+            index=min(st.session_state.name_col, num_cols-1)
+        )
+        sample = df.iloc[0, st.session_state.name_col] if len(df) > 0 else "N/A"
+        extracted = extract_product_name(sample)
+        st.caption(f"Sample: {str(sample)[:30]}...")
+        st.caption(f"Extracted: {str(extracted)[:30]}...")
+    
+    with col2:
+        st.session_state.price_col = st.selectbox(
+            "Price Column",
+            range(num_cols),
+            format_func=lambda i: f"{i}: {col_names[i]}",
+            index=min(st.session_state.price_col, num_cols-1)
+        )
+        sample = df.iloc[0, st.session_state.price_col] if len(df) > 0 else "N/A"
+        st.caption(f"Sample: {str(sample)[:30]}...")
+    
+    with col3:
+        use_search = st.checkbox("🔍 Use ImagAPI Search", 
+                                value=st.session_state.use_image_search)
+        st.session_state.use_image_search = use_search
         
-        if st.button("✨ Render", type="primary", use_container_width=True):
-            overrides = {
-                'product_name': st.session_state.product_name,
-                'price': st.session_state.price,
-                'product_image': st.session_state.product_image_url,
-                'background_url': st.session_state.background_url,
-                'transparent_bg': st.session_state.transparent_bg
-            }
-            
-            with st.spinner("Rendering..."):
-                try:
-                    img = render_polotno(st.session_state.original_json, overrides)
-                    st.session_state.rendered_image = img
-                    st.success(f"✅ {img.width}×{img.height}px")
-                except Exception as e:
-                    st.error(f"❌ Render failed: {e}")
-                    st.exception(e)
+        if use_search:
+            st.session_state.api_file_type = st.selectbox(
+                "Image Format", 
+                ['png', 'jpg', 'webp'],
+                index=['png', 'jpg', 'webp'].index(st.session_state.api_file_type)
+            )
+            st.caption(f"Searching: '{extracted[:20]}...'")
+        else:
+            st.session_state.image_col = st.selectbox(
+                "Image URL Column",
+                range(num_cols),
+                format_func=lambda i: f"{i}: {col_names[i]}",
+                index=min(st.session_state.image_col, num_cols-1)
+            )
+
+# Manual Layout Settings (only if not using Polotno)
+if st.session_state.csv_data is not None and not st.session_state.use_polotno:
+    st.header("Manual Layout Settings")
     
-    with col_preview:
-        if st.session_state.rendered_image:
-            st.subheader("👁️ Preview")
-            st.image(st.session_state.rendered_image, use_column_width=True)
-            
-            col1, col2, col3 = st.columns(3)
-            
+    cw, ch = st.session_state.canvas_size
+    
+    with st.expander("🏷️ Product Name Settings"):
+        st.session_state.show_product_name = st.checkbox("Show Product Name", 
+                                                        st.session_state.show_product_name)
+        
+        if st.session_state.show_product_name:
+            col1, col2 = st.columns(2)
             with col1:
-                buf = BytesIO()
-                st.session_state.rendered_image.save(buf, format="PNG")
-                st.download_button(
-                    "💾 PNG",
-                    buf.getvalue(),
-                    f"design_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
-                    "image/png",
-                    use_container_width=True
-                )
+                st.session_state.name_x = st.number_input("Name X", 0, cw, st.session_state.name_x)
+                st.session_state.name_y = st.number_input("Name Y", 0, ch, st.session_state.name_y)
+                st.session_state.name_size = st.slider("Font Size", 10, 80, 32)
+            with col2:
+                st.session_state.name_align = st.selectbox("Align", ["left", "center", "right"])
+                st.session_state.name_weight = st.selectbox("Weight", ["normal", "bold"])
+                st.session_state.name_color = st.color_picker("Color", '#FFFFFF')
+            
+            st.session_state.name_max_width = st.slider("Max Width", 200, cw-100, 800)
+            st.session_state.name_max_lines = st.slider("Max Lines", 1, 3, 2)
+    
+    with st.expander("📐 Product Image Settings"):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.product_x = st.number_input("Image X", 0, cw, 100)
+            st.session_state.product_y = st.number_input("Image Y", 0, ch, 200)
+        with col2:
+            st.session_state.product_w = st.number_input("Width", 10, cw, 400)
+            st.session_state.product_h = st.number_input("Height", 10, ch, 400)
+        
+        st.session_state.product_radius = st.slider("Corner Radius", 0, 100, 20)
+    
+    with st.expander("💰 Price Settings"):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.price_x = st.number_input("Price X", 0, cw, 100)
+            st.session_state.price_y = st.number_input("Price Y", 0, ch, 650)
+            st.session_state.price_size = st.slider("Price Font Size", 10, 150, 48)
+        with col2:
+            st.session_state.price_align = st.selectbox("Price Align", ["left", "center", "right"])
+            st.session_state.price_weight = st.selectbox("Price Weight", ["normal", "bold"])
+            st.session_state.price_color = st.color_picker("Price Color", '#FFFFFF')
+
+# Preview and Generate
+if st.session_state.csv_data is not None:
+    st.header("Preview & Generate")
+    
+    df = st.session_state.csv_data.copy()
+    
+    # Preview first product
+    with st.expander("👁️ Preview First Product"):
+        if len(df) > 0:
+            row = df.iloc[0]
+            full_name = row.iloc[st.session_state.name_col]
+            name = extract_product_name(full_name)
+            price = row.iloc[st.session_state.price_col]
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Full Name:** {full_name}")
+                st.write(f"**Extracted:** {name}")
+                st.write(f"**Price:** {price}")
+            
+            # Get image
+            if st.session_state.use_image_search:
+                with st.spinner("Searching image..."):
+                    result = search_product_image(full_name, st.session_state.api_file_type)
+                    img_url = result['url'] if result else None
+                    if result:
+                        st.success(f"Found: {result['url'][:50]}...")
+            else:
+                img_url = row.iloc[st.session_state.image_col]
             
             with col2:
-                buf = BytesIO()
-                rgb_img = st.session_state.rendered_image.convert('RGB')
-                rgb_img.save(buf, format="JPEG", quality=95)
-                st.download_button(
-                    "💾 JPG",
-                    buf.getvalue(),
-                    f"design_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
-                    "image/jpeg",
-                    use_container_width=True
-                )
+                st.write(f"**Image URL:** {str(img_url)[:50] if img_url else 'None'}...")
             
-            with col3:
-                buf = BytesIO()
-                st.session_state.rendered_image.save(buf, format="WEBP", quality=95)
-                st.download_button(
-                    "💾 WebP",
-                    buf.getvalue(),
-                    f"design_{datetime.now().strftime('%Y%m%d_%H%M%S')}.webp",
-                    "image/webp",
-                    use_container_width=True
-                )
-else:
-    st.info("📂 Load a Polotno JSON file to start")
+            product_img = load_image_from_url(img_url)
+            
+            # Build config
+            config = {
+                'use_polotno': st.session_state.use_polotno,
+                'polotno_fields': st.session_state.polotno_fields,
+                'show_product_name': st.session_state.get('show_product_name', True),
+                'name_max_lines': st.session_state.get('name_max_lines', 2),
+            }
+            
+            # Add manual settings if not using Polotno
+            if not st.session_state.use_polotno:
+                config.update({
+                    'name_x': st.session_state.name_x, 'name_y': st.session_state.name_y,
+                    'name_size': st.session_state.name_size, 'name_color': st.session_state.name_color,
+                    'name_align': st.session_state.name_align, 'name_weight': st.session_state.name_weight,
+                    'name_bg': True, 'name_bg_color': '#000000', 'name_padding': 12,
+                    'name_radius': 8, 'name_shadow': True, 'name_max_width': st.session_state.name_max_width,
+                    'product_x': st.session_state.product_x, 'product_y': st.session_state.product_y,
+                    'product_w': st.session_state.product_w, 'product_h': st.session_state.product_h,
+                    'product_radius': st.session_state.product_radius,
+                    'price_x': st.session_state.price_x, 'price_y': st.session_state.price_y,
+                    'price_size': st.session_state.price_size, 'price_color': st.session_state.price_color,
+                    'price_align': st.session_state.price_align, 'price_weight': st.session_state.price_weight,
+                    'price_bg': True, 'price_bg_color': '#000000', 'price_padding': 15,
+                    'price_radius': 10, 'price_shadow': True, 'price_line_height': 1.2,
+                })
+            
+            preview = render_single_ad(
+                st.session_state.canvas_size, 
+                st.session_state.base_image, 
+                product_img, name, price, config
+            )
+            st.image(preview, use_column_width=True)
+    
+    # Generate All
+    if st.button("🚀 Generate All Ads", type="primary", use_container_width=True):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        generated = []
+        names = []
+        search_urls = []
+        
+        config = {
+            'use_polotno': st.session_state.use_polotno,
+            'polotno_fields': st.session_state.polotno_fields,
+            'show_product_name': st.session_state.get('show_product_name', True),
+            'name_max_lines': st.session_state.get('name_max_lines', 2),
+        }
+        
+        if not st.session_state.use_polotno:
+            config.update({
+                'name_x': st.session_state.name_x, 'name_y': st.session_state.name_y,
+                'name_size': st.session_state.name_size, 'name_color': st.session_state.name_color,
+                'name_align': st.session_state.name_align, 'name_weight': st.session_state.name_weight,
+                'name_bg': True, 'name_bg_color': '#000000', 'name_padding': 12,
+                'name_radius': 8, 'name_shadow': True, 'name_max_width': st.session_state.name_max_width,
+                'product_x': st.session_state.product_x, 'product_y': st.session_state.product_y,
+                'product_w': st.session_state.product_w, 'product_h': st.session_state.product_h,
+                'product_radius': st.session_state.product_radius,
+                'price_x': st.session_state.price_x, 'price_y': st.session_state.price_y,
+                'price_size': st.session_state.price_size, 'price_color': st.session_state.price_color,
+                'price_align': st.session_state.price_align, 'price_weight': st.session_state.price_weight,
+                'price_bg': True, 'price_bg_color': '#000000', 'price_padding': 15,
+                'price_radius': 10, 'price_shadow': True, 'price_line_height': 1.2,
+            })
+        
+        for idx, row in df.iterrows():
+            progress = (idx + 1) / len(df)
+            progress_bar.progress(min(progress, 0.99))
+            
+            full_name = row.iloc[st.session_state.name_col]
+            name = extract_product_name(full_name)
+            price = row.iloc[st.session_state.price_col]
+            
+            status_text.text(f"Processing {idx + 1}/{len(df)}: {str(name)[:30]}...")
+            
+            # Get image
+            if st.session_state.use_image_search:
+                result = search_product_image(full_name, st.session_state.api_file_type)
+                img_url = result['url'] if result else None
+                search_urls.append(img_url if img_url else "")
+            else:
+                img_url = row.iloc[st.session_state.image_col]
+                search_urls.append("")
+            
+            # Render
+            product_img = load_image_from_url(img_url)
+            ad = render_single_ad(
+                st.session_state.canvas_size, 
+                st.session_state.base_image, 
+                product_img, name, price, config
+            )
+            
+            generated.append(ad)
+            names.append(str(name))
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Add search URLs to CSV
+        if st.session_state.use_image_search:
+            df['imagapi_image_url'] = search_urls
+            df['extracted_name'] = df.iloc[:, st.session_state.name_col].apply(extract_product_name)
+        
+        st.session_state.generated_ads = generated
+        st.session_state.csv_data = df
+        
+        st.success(f"✅ Generated {len(generated)} ads!")
+        
+        # Downloads
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            zip_data = create_zip_download(generated, names)
+            st.download_button(
+                "📦 Download All Images (ZIP)",
+                zip_data,
+                f"ads_{st.session_state.canvas_size[0]}x{st.session_state.canvas_size[1]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                "application/zip",
+                use_container_width=True
+            )
+        
+        with col2:
+            csv_data = get_csv_download_link(df)
+            st.download_button(
+                "📄 Download Updated CSV",
+                csv_data,
+                f"products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        
+        # Show gallery
+        with st.expander(f"View All {min(len(generated), 12)} Ads"):
+            cols = st.columns(3)
+            for i, (img, name) in enumerate(zip(generated[:12], names[:12])):
+                with cols[i % 3]:
+                    st.image(img, caption=f"{i+1}. {name[:40]}", use_column_width=True)
