@@ -10,3 +10,7 @@ groq
 pyperclip
 moviepy
 lxml
+python-pptx
+Pillow
+numpy
+opencv-python-headless
