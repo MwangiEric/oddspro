@@ -6,13 +6,13 @@ import cv2
 from pathlib import Path
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from PIL import Image, ImageDraw, ImageFont
 import hashlib
 import json
 import math
 import re
 import zipfile
-import shutil
 from io import BytesIO
 
 st.set_page_config(page_title="PPTX Video Factory", layout="wide")
@@ -22,6 +22,25 @@ LAYOUTS = {
     "Landscape (16:9) 1920x1080": {"w": 1920, "h": 1080},
     "Portrait (9:16) 1080x1920": {"w": 1080, "h": 1920},
     "Square (1:1) 1080x1080": {"w": 1080, "h": 1080},
+}
+
+HORIZONTAL_ALIGN_MAP = {
+    PP_ALIGN.LEFT: 'left',
+    PP_ALIGN.CENTER: 'center',
+    PP_ALIGN.RIGHT: 'right',
+    PP_ALIGN.JUSTIFY: 'justify',
+    PP_ALIGN.DISTRIBUTE: 'justify',
+    None: 'left'
+}
+
+VERTICAL_ALIGN_MAP = {
+    MSO_ANCHOR.TOP: 'top',
+    MSO_ANCHOR.MIDDLE: 'middle',
+    MSO_ANCHOR.BOTTOM: 'bottom',
+    MSO_ANCHOR.TOP_CENTERED: 'top',
+    MSO_ANCHOR.MIDDLE_CENTERED: 'middle',
+    MSO_ANCHOR.BOTTOM_CENTERED: 'bottom',
+    None: 'top'
 }
 
 ANIMATION_STYLES = {
@@ -108,21 +127,17 @@ def find_best_match(query_name, query_id, available_images):
         img_clean = img_name.lower().replace(' ', '').replace('_', '').replace('-', '')
         score = 0
         
-        # Exact match with name
         if query_name_clean == img_clean:
             score = 100
-        # Name contains image name or vice versa
         elif query_name_clean in img_clean or img_clean in query_name_clean:
             score = 80
         
-        # Check ID match if name didn't match well
         if score < 80 and query_id_clean:
             if query_id_clean == img_clean:
                 score = 90
             elif query_id_clean in img_clean or img_clean in query_id_clean:
                 score = 70
         
-        # Partial word matching
         if score < 70:
             name_words = set(re.findall(r'[a-z]+', query_name_clean))
             img_words = set(re.findall(r'[a-z]+', img_clean))
@@ -130,7 +145,6 @@ def find_best_match(query_name, query_id, available_images):
             if common:
                 score = len(common) * 10
         
-        # Number matching
         if score < 50:
             name_nums = set(re.findall(r'\d+', query_name_clean))
             id_nums = set(re.findall(r'\d+', query_id_clean))
@@ -148,12 +162,10 @@ def get_shape_identifier(shape):
     """Get best identifier for matching - name and alt text."""
     name = shape.name
     
-    # Try to get alt text (original filename when inserted)
     alt_text = None
     if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
         try:
             alt_text = shape._pic.nvPicPr.cNvPr.get('descr')
-            # Clean up alt text - remove path, keep filename
             if alt_text:
                 alt_text = Path(alt_text).stem
         except:
@@ -163,6 +175,81 @@ def get_shape_identifier(shape):
         'name': name,
         'alt_text': alt_text,
         'id': getattr(shape, 'shape_id', None)
+    }
+
+def get_suggested_filename(shape_name, alt_text):
+    """Generate suggested filename for missing image."""
+    if alt_text:
+        base = Path(alt_text).stem
+    else:
+        base = shape_name
+    
+    base = re.sub(r'[^\w\s-]', '', base).strip()
+    base = base.replace(' ', '_').replace('-', '_').lower()
+    base = re.sub(r'_+', '_', base)
+    
+    return f"{base}.png" if base else "image.png"
+
+def extract_text_frame_properties(text_frame, scale=1.0):
+    """Extract all text formatting including alignment."""
+    if not text_frame or not text_frame.paragraphs:
+        return None
+    
+    margin_left = int(text_frame.margin_left * 96 / 914400 * scale) if text_frame.margin_left else 0
+    margin_right = int(text_frame.margin_right * 96 / 914400 * scale) if text_frame.margin_right else 0
+    margin_top = int(text_frame.margin_top * 96 / 914400 * scale) if text_frame.margin_top else 0
+    margin_bottom = int(text_frame.margin_bottom * 96 / 914400 * scale) if text_frame.margin_bottom else 0
+    
+    vertical_anchor = text_frame.vertical_anchor
+    vertical_align = VERTICAL_ALIGN_MAP.get(vertical_anchor, 'top')
+    
+    paragraphs = []
+    for para in text_frame.paragraphs:
+        if not para.runs and not para.text.strip():
+            continue
+            
+        para_align = para.alignment
+        horizontal_align = HORIZONTAL_ALIGN_MAP.get(para_align, 'left')
+        
+        run = para.runs[0] if para.runs else None
+        if run and run.font:
+            font_size = int(run.font.size.pt * scale) if run.font.size else int(24 * scale)
+            bold = bool(run.font.bold)
+            italic = bool(run.font.italic)
+            font_name = run.font.name or "Arial"
+            
+            color = "#000000"
+            try:
+                if run.font.color and run.font.color.rgb:
+                    color = f"#{run.font.color.rgb}"
+            except:
+                pass
+        else:
+            font_size = int(24 * scale)
+            bold = italic = False
+            font_name = "Arial"
+            color = "#000000"
+        
+        paragraphs.append({
+            'text': para.text,
+            'align': horizontal_align,
+            'font_size': max(font_size, 8),
+            'font_name': font_name,
+            'bold': bold,
+            'italic': italic,
+            'color': color,
+            'line_spacing': 1.2
+        })
+    
+    return {
+        'paragraphs': paragraphs,
+        'vertical_align': vertical_align,
+        'margins': {
+            'left': margin_left,
+            'right': margin_right,
+            'top': margin_top,
+            'bottom': margin_bottom
+        }
     }
 
 def extract_background(slide):
@@ -177,10 +264,6 @@ def extract_background(slide):
     return (255, 255, 255)
 
 def harvest_ppt(pptx_path, target_dims=None, asset_sources=None, manual_mappings=None):
-    """
-    Extract PPT with multiple asset sources.
-    asset_sources: dict with 'folder', 'extracted_media', 'uploaded' keys
-    """
     try:
         prs = Presentation(pptx_path)
         if not prs.slides:
@@ -207,19 +290,21 @@ def harvest_ppt(pptx_path, target_dims=None, asset_sources=None, manual_mappings
         
         bg_color = extract_background(slide)
         
-        # Combine all asset sources
-        all_images = {}
-        source_info = {}
+        # Build auto-match pool: folder -> extracted -> uploaded
+        auto_match_pool = {}
         
         if asset_sources:
-            # Priority: uploaded > extracted_media > folder
-            for source_name in ['folder', 'extracted_media', 'uploaded']:
-                if source_name in asset_sources and asset_sources[source_name]:
-                    imgs = get_images_from_folder(asset_sources[source_name]) if isinstance(asset_sources[source_name], (str, Path)) else asset_sources[source_name]
-                    for img_name, img_path in imgs.items():
-                        if img_name not in all_images:
-                            all_images[img_name] = img_path
-                            source_info[img_name] = source_name
+            # Priority 1: Auto-discovered folder
+            if asset_sources.get('folder'):
+                auto_match_pool.update(get_images_from_folder(asset_sources['folder']))
+            
+            # Priority 2: Extracted from PPTX
+            if asset_sources.get('extracted_media'):
+                auto_match_pool.update(get_images_from_folder(asset_sources['extracted_media']))
+            
+            # Priority 3: User uploaded (last auto-match option)
+            if asset_sources.get('uploaded'):
+                auto_match_pool.update(asset_sources['uploaded'])
         
         config = {
             "canvas": {"w": canvas_w, "h": canvas_h},
@@ -228,13 +313,14 @@ def harvest_ppt(pptx_path, target_dims=None, asset_sources=None, manual_mappings
             "offset": {"x": offset_x, "y": offset_y},
             "pptx_background": bg_color,
             "asset_sources": asset_sources,
-            "available_images": list(all_images.keys()),
+            "auto_match_pool": list(auto_match_pool.keys()),
             "elements": []
         }
         
         def process_shape(shape, parent_x=0, parent_y=0):
+            """Process a shape and return element dict or list of elements (for groups)."""
             identifiers = get_shape_identifier(shape)
-            original_id = identifiers['name']  # Use name as ID (user-editable in PowerPoint)
+            original_id = identifiers['name']
             display_name = original_id
             
             x = int((shape.left * emu_to_px * scale) + offset_x + parent_x)
@@ -242,6 +328,21 @@ def harvest_ppt(pptx_path, target_dims=None, asset_sources=None, manual_mappings
             w = int(shape.width * emu_to_px * scale)
             h = int(shape.height * emu_to_px * scale)
             
+            # Handle groups recursively
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                children = []
+                for child in shape.shapes:
+                    child_offset_x = x - offset_x
+                    child_offset_y = y - offset_y
+                    child_result = process_shape(child, parent_x=child_offset_x, parent_y=child_offset_y)
+                    
+                    if isinstance(child_result, list):
+                        children.extend(child_result)
+                    elif child_result:
+                        children.append(child_result)
+                return children if children else None
+            
+            # Build element
             el = {
                 "id": original_id,
                 "name": display_name,
@@ -251,69 +352,74 @@ def harvest_ppt(pptx_path, target_dims=None, asset_sources=None, manual_mappings
                 "z_order": getattr(shape, 'z_order', 0) or 0,
             }
             
+            # TEXT - Always extract and render
             if shape.has_text_frame and shape.text.strip():
-                para = shape.text_frame.paragraphs[0]
-                run = para.runs[0] if para.runs else None
-                
-                el.update({
-                    "type": "text",
-                    "text_default": shape.text,
-                    "size": max(int((run.font.size.pt if run and run.font.size else 24) * scale), 8),
-                    "color": f"#{run.font.color.rgb}" if run and run.font.color.rgb else "#000000",
-                    "bold": bool(run.font.bold) if run else False,
-                })
-                return el
+                text_props = extract_text_frame_properties(shape.text_frame, scale)
+                if text_props and text_props['paragraphs']:
+                    el.update({
+                        "type": "text",
+                        "text_props": text_props,
+                        "text_default": shape.text_frame.text,
+                    })
+                    return el
             
+            # PICTURE - Try to find image
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                 el["type"] = "image"
                 
-                # Try manual mapping first
+                # First: Check manual mapping
                 if manual_mappings and original_id in manual_mappings:
                     el["image_path"] = manual_mappings[original_id]
                     el["match_source"] = "manual"
                 else:
-                    # Try matching by name first, then alt_text
-                    matched = find_best_match(display_name, identifiers.get('alt_text'), all_images)
+                    # Auto-match from pool
+                    matched = find_best_match(display_name, identifiers.get('alt_text'), auto_match_pool)
                     
-                    # If no match by name, try alt_text as primary
                     if not matched and identifiers.get('alt_text'):
-                        matched = find_best_match(identifiers['alt_text'], display_name, all_images)
+                        matched = find_best_match(identifiers['alt_text'], display_name, auto_match_pool)
                     
                     if matched:
                         el["image_path"] = matched
-                        el["match_source"] = source_info.get(Path(matched).name, "unknown")
+                        # Determine which source it came from
+                        if asset_sources.get('folder') and matched in get_images_from_folder(asset_sources['folder']).values():
+                            el["match_source"] = "folder"
+                        elif asset_sources.get('extracted_media') and matched in get_images_from_folder(asset_sources['extracted_media']).values():
+                            el["match_source"] = "extracted"
+                        else:
+                            el["match_source"] = "uploaded"
+                    else:
+                        # No match - add suggestion
+                        el["suggested_filename"] = get_suggested_filename(display_name, identifiers.get('alt_text'))
                 
                 return el
             
-            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-                children = []
-                for child in shape.shapes:
-                    child_el = process_shape(child, parent_x=x - offset_x, parent_y=y - offset_y)
-                    if child_el:
-                        children.append(child_el)
-                return children
-            
+            # SHAPE - Check if should be image or stay as shape
             el["type"] = "shape"
             
-            # Check if this shape should be treated as image (manual or auto-match)
+            # Manual override to image
             if manual_mappings and original_id in manual_mappings:
                 el["type"] = "image"
                 el["image_path"] = manual_mappings[original_id]
                 el["match_source"] = "manual"
                 return el
             
-            # Auto-convert shapes with matching image names
-            matched = find_best_match(display_name, None, all_images)
+            # Auto-convert to image if match found
+            matched = find_best_match(display_name, None, auto_match_pool)
             if not matched and identifiers.get('alt_text'):
-                matched = find_best_match(identifiers['alt_text'], None, all_images)
+                matched = find_best_match(identifiers['alt_text'], None, auto_match_pool)
             
             if matched:
                 el["type"] = "image"
                 el["image_path"] = matched
-                el["match_source"] = source_info.get(Path(matched).name, "auto")
+                if asset_sources.get('folder') and matched in get_images_from_folder(asset_sources['folder']).values():
+                    el["match_source"] = "folder"
+                elif asset_sources.get('extracted_media') and matched in get_images_from_folder(asset_sources['extracted_media']).values():
+                    el["match_source"] = "extracted"
+                else:
+                    el["match_source"] = "uploaded"
                 return el
             
-            # Shape styling
+            # Stay as shape - extract styling
             try:
                 if hasattr(shape, 'fill') and shape.fill.type == 1:
                     if hasattr(shape.fill.fore_color, 'rgb') and shape.fill.fore_color.rgb:
@@ -332,6 +438,7 @@ def harvest_ppt(pptx_path, target_dims=None, asset_sources=None, manual_mappings
             
             return el
         
+        # Process all shapes and flatten
         for shape in slide.shapes:
             result = process_shape(shape)
             if isinstance(result, list):
@@ -339,6 +446,8 @@ def harvest_ppt(pptx_path, target_dims=None, asset_sources=None, manual_mappings
             elif result:
                 config["elements"].append(result)
         
+        # Ensure all elements are dicts
+        config["elements"] = [el for el in config["elements"] if isinstance(el, dict)]
         config["elements"].sort(key=lambda x: x.get('z_order', 0))
         
         return config
@@ -349,47 +458,114 @@ def harvest_ppt(pptx_path, target_dims=None, asset_sources=None, manual_mappings
         st.code(traceback.format_exc())
         return None
 
-def render_text(text, box_w, box_h, font_size, color, font_path):
-    img = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+_font_cache = {}
+
+def get_font_cached(font_path, size, bold=False, italic=False):
+    """Get font with caching."""
+    cache_key = (font_path, size, bold, italic)
+    if cache_key in _font_cache:
+        return _font_cache[cache_key]
     
     if font_path and os.path.exists(font_path):
         try:
-            font = ImageFont.truetype(font_path, font_size)
+            font = ImageFont.truetype(font_path, size)
         except:
             font = ImageFont.load_default()
     else:
         font = ImageFont.load_default()
     
-    words = text.split()
-    lines = []
-    current = []
+    _font_cache[cache_key] = font
+    return font
+
+def render_text_paragraphs(text_props, box_w, box_h, font_path):
+    """Render text with proper alignment."""
+    img = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
     
-    for word in words:
-        test = ' '.join(current + [word])
-        bbox = draw.textbbox((0, 0), test, font=font)
-        if bbox[2] - bbox[0] <= box_w:
-            current.append(word)
-        else:
-            if current:
-                lines.append(' '.join(current))
-            current = [word]
-    if current:
-        lines.append(' '.join(current))
+    paragraphs = text_props.get('paragraphs', [])
+    if not paragraphs:
+        return np.array(img)
     
-    if not lines:
-        lines = [text]
+    margins = text_props.get('margins', {'left': 0, 'right': 0, 'top': 0, 'bottom': 0})
+    vertical_align = text_props.get('vertical_align', 'top')
     
-    line_h = font_size * 1.2
-    total_h = len(lines) * line_h
-    y = (box_h - total_h) // 2
+    avail_w = box_w - margins['left'] - margins['right']
+    avail_h = box_h - margins['top'] - margins['bottom']
     
-    for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        line_w = bbox[2] - bbox[0]
-        x = (box_w - line_w) // 2
-        draw.text((x, y - bbox[1]), line, fill=color, font=font)
-        y += line_h
+    # Calculate content height
+    para_heights = []
+    
+    for para in paragraphs:
+        font_size = para['font_size']
+        line_height = int(font_size * para.get('line_spacing', 1.2))
+        
+        text = para['text']
+        font = get_font_cached(font_path, font_size, para.get('bold', False), para.get('italic', False))
+        
+        words = text.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            text_width = bbox[2] - bbox[0]
+            
+            if text_width <= avail_w:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        if not lines:
+            lines = [text]
+        
+        para['computed_lines'] = lines
+        para_heights.append(len(lines) * line_height)
+    
+    total_content_height = sum(para_heights)
+    
+    # Vertical positioning
+    if vertical_align == 'middle':
+        start_y = margins['top'] + (avail_h - total_content_height) // 2
+    elif vertical_align == 'bottom':
+        start_y = margins['top'] + avail_h - total_content_height
+    else:
+        start_y = margins['top']
+    
+    current_y = start_y
+    
+    for i, para in enumerate(paragraphs):
+        font_size = para['font_size']
+        line_height = int(font_size * para.get('line_spacing', 1.2))
+        align = para.get('align', 'left')
+        color_hex = para.get('color', '#000000')
+        
+        color_hex = color_hex.lstrip('#')
+        color = tuple(int(color_hex[j:j+2], 16) for j in (0, 2, 4)) + (255,)
+        
+        font = get_font_cached(font_path, font_size, para.get('bold', False), para.get('italic', False))
+        lines = para.get('computed_lines', [para['text']])
+        
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_width = bbox[2] - bbox[0]
+            
+            if align == 'center':
+                x = margins['left'] + (avail_w - text_width) // 2
+            elif align == 'right':
+                x = margins['left'] + avail_w - text_width
+            else:
+                x = margins['left']
+            
+            draw.text((x, current_y - bbox[1]), line, fill=color, font=font)
+            current_y += line_height
+        
+        current_y += int(font_size * 0.3)
     
     return np.array(img)
 
@@ -406,52 +582,30 @@ def apply_animation(element, progress, anim_config):
     w, h = element['w'], element['h']
     
     if style == 'fade_in':
-        alpha = t
-        return {**element, 'alpha': alpha, 'x': x, 'y': y}
-    
+        return {**element, 'alpha': t}
     elif style == 'fade_out':
-        alpha = 1 - t
-        return {**element, 'alpha': alpha, 'x': x, 'y': y}
-    
+        return {**element, 'alpha': 1 - t}
     elif style == 'slide_left':
-        offset = int(w * (1 - t))
-        return {**element, 'x': x - offset, 'y': y}
-    
+        return {**element, 'x': x - int(w * (1 - t))}
     elif style == 'slide_right':
-        offset = int(w * (1 - t))
-        return {**element, 'x': x + offset, 'y': y}
-    
+        return {**element, 'x': x + int(w * (1 - t))}
     elif style == 'slide_up':
-        offset = int(h * (1 - t))
-        return {**element, 'x': x, 'y': y - offset}
-    
+        return {**element, 'y': y - int(h * (1 - t))}
     elif style == 'slide_down':
-        offset = int(h * (1 - t))
-        return {**element, 'x': x, 'y': y + offset}
-    
+        return {**element, 'y': y + int(h * (1 - t))}
     elif style == 'scale_up':
         scale = 0.5 + 0.5 * t
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        new_x = x + (w - new_w) // 2
-        new_y = y + (h - new_h) // 2
-        return {**element, 'x': new_x, 'y': new_y, 'w': new_w, 'h': new_h}
-    
+        new_w, new_h = int(w * scale), int(h * scale)
+        return {**element, 'x': x + (w - new_w) // 2, 'y': y + (h - new_h) // 2, 'w': new_w, 'h': new_h}
     elif style == 'scale_down':
         scale = 1.5 - 0.5 * t
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        new_x = x + (w - new_w) // 2
-        new_y = y + (h - new_h) // 2
-        return {**element, 'x': new_x, 'y': new_y, 'w': new_w, 'h': new_h}
-    
+        new_w, new_h = int(w * scale), int(h * scale)
+        return {**element, 'x': x + (w - new_w) // 2, 'y': y + (h - new_h) // 2, 'w': new_w, 'h': new_h}
     elif style == 'bounce':
         bounce = math.sin(t * math.pi) * 0.3 * (1 - t)
         return {**element, 'y': y - int(h * bounce)}
-    
     elif style == 'rotate':
-        angle = 360 * (1 - t)
-        return {**element, 'rotation': angle}
+        return {**element, 'rotation': 360 * (1 - t)}
     
     return element
 
@@ -473,19 +627,13 @@ def render_frame(layout, user_data, font_path, bg_settings, anim_settings=None, 
     pil_img = Image.fromarray(frame)
     draw = ImageDraw.Draw(pil_img)
     
-    text_layers = []
-    
     for el in layout['elements']:
-        original_el = el.copy()
-        
-        # Apply animation if configured
+        # Apply animation
         if anim_settings and el['id'] in anim_settings:
             anim_config = anim_settings[el['id']]
             delay = anim_config.get('delay', 0)
-            duration = anim_config.get('duration', 1.0)
-            
             if frame_time >= delay:
-                anim_progress = min((frame_time - delay) / duration, 1.0) if duration > 0 else 1.0
+                anim_progress = min((frame_time - delay) / anim_config.get('duration', 1.0), 1.0)
                 el = apply_animation(el, anim_progress, anim_config)
         
         x, y, ew, eh = el['x'], el['y'], el['w'], el['h']
@@ -524,40 +672,66 @@ def render_frame(layout, user_data, font_path, bg_settings, anim_settings=None, 
                     
                     pil_img.paste(asset_img, (x, y), asset_img)
                 except Exception as e:
-                    print(f"Image error: {e}")
                     draw.rectangle([x, y, x+ew, y+eh], fill=(255, 0, 0))
                     draw.text((x+5, y+5), "ERR", fill=(255, 255, 255))
             else:
-                draw.rectangle([x, y, x+ew, y+eh], fill=(150, 150, 150), outline=(100, 100, 100))
-                draw.text((x+5, y+5), f"No img\n{el['id'][:10]}", fill=(50, 50, 50))
+                # MISSING IMAGE - Show placeholder with suggestion
+                draw.rectangle([x, y, x+ew, y+eh], fill=(220, 220, 220), outline=(255, 100, 100), width=2)
+                
+                # Show suggestion text
+                suggestion = el.get('suggested_filename', 'image.png')
+                label = f"📷 Missing"
+                
+                # Truncate to fit
+                max_chars = max(10, ew // 8)
+                if len(suggestion) > max_chars:
+                    suggestion = suggestion[:max_chars-3] + "..."
+                
+                # Draw centered
+                try:
+                    font = get_font_cached(font_path, 12)
+                except:
+                    font = get_font_cached(None, 12)
+                
+                # Label
+                bbox = draw.textbbox((0, 0), label, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_x = x + (ew - text_w) // 2
+                text_y = y + eh // 3
+                draw.text((text_x, text_y), label, fill=(100, 100, 100), font=font)
+                
+                # Suggestion
+                bbox2 = draw.textbbox((0, 0), suggestion, font=font)
+                text_w2 = bbox2[2] - bbox2[0]
+                text_x2 = x + (ew - text_w2) // 2
+                draw.text((text_x2, text_y + 15), suggestion, fill=(150, 50, 50), font=font)
         
         elif el['type'] == 'text':
             text = user_data.get(el['id'], el.get('text_default', ''))
-            if text.strip():
-                hex_color = el['color'].lstrip('#')
-                rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-                text_layers.append({
-                    'x': x, 'y': y, 'w': ew, 'h': eh,
-                    'text': text, 'size': el['size'], 'color': rgb,
-                    'alpha': alpha
-                })
-    
-    frame = np.array(pil_img)
-    
-    for t in text_layers:
-        text_array = render_text(t['text'], t['w'], t['h'], t['size'], t['color'] + (int(255 * t.get('alpha', 1.0)),), font_path)
-        
-        x, y, ew, eh = t['x'], t['y'], t['w'], t['h']
-        
-        if x < 0 or y < 0 or x + ew > w or y + eh > h:
-            continue
-        
-        alpha = text_array[:, :, 3:4].astype(np.float32) / 255.0
-        rgb_layer = text_array[:, :, :3].astype(np.float32)
-        roi = frame[y:y+eh, x:x+ew].astype(np.float32)
-        
-        blended = (rgb_layer * alpha + roi * (1 - alpha)).astype(np.uint8)
-        frame[y:y+eh, x:x+ew] = blended
+            
+            text_props = el.get('text_props', {}).copy()
+            if text_props and text != el.get('text_default', ''):
+                if text_props.get('paragraphs'):
+                    text_props['paragraphs'][0]['text'] = text
+            
+            if text_props and text_props.get('paragraphs'):
+                text_array = render_text_paragraphs(text_props, ew, eh, font_path)
+                
+                if text_array.shape[0] > 0 and text_array.shape[1] > 0:
+                    y_end = min(y + eh, h)
+                    x_end = min(x + ew, w)
+                    h_actual = y_end - y
+                    w_actual = x_end - x
+                    
+                    if h_actual > 0 and w_actual > 0:
+                        text_crop = text_array[:h_actual, :w_actual]
+                        
+                        alpha = text_crop[:, :, 3:4].astype(np.float32) / 255.0
+                        rgb_layer = text_crop[:, :, :3].astype(np.float32)
+                        roi = frame[y:y_end, x:x_end].astype(np.float32)
+                        
+                        blended = (rgb_layer * alpha + roi * (1 - alpha)).astype(np.uint8)
+                        frame[y:y_end, x:x_end] = blended
     
     return frame
 
@@ -579,14 +753,14 @@ def encode_video(frames, fps, output_path):
 
 def main():
     st.title("🏭 PPTX Video Factory")
-    st.caption("Auto-discover assets from template folders + manual upload fallback")
+    st.caption("Auto-match → Manual → Upload | Text always renders")
     
     defaults = {
         'layout': None,
         'user_data': {},
         'font_path': find_font(),
         'bg_settings': {'type': 'pptx', 'value': None},
-        'asset_sources': {},  # 'folder', 'extracted_media', 'uploaded'
+        'asset_sources': {},
         'manual_mappings': {},
         'pptx_path': None,
         'pptx_name': None,
@@ -595,7 +769,8 @@ def main():
         'current_template': None,
         'anim_settings': {},
         'selected_element': None,
-        'uploaded_images': {},  # Store uploaded images: {filename: temp_path}
+        'uploaded_images': {},
+        'missing_elements': [],  # Track elements needing images
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -615,12 +790,10 @@ def main():
         st.header("3. Upload PPTX")
         uploaded = st.file_uploader("PPTX file", type=['pptx'])
         
-        if uploaded and st.button("Extract & Auto-Discover"):
-            # Get PPTX name without extension
+        if uploaded and st.button("Extract & Auto-Match"):
             pptx_name = Path(uploaded.name).stem
             st.session_state.pptx_name = pptx_name
             
-            # Create temp dir for extraction
             extract_dir = Path(tempfile.gettempdir()) / f"pptx_{hashlib.md5(uploaded.getvalue()).hexdigest()[:8]}"
             extract_dir.mkdir(exist_ok=True)
             
@@ -630,7 +803,10 @@ def main():
             
             st.session_state.pptx_path = str(tmp_path)
             
-            # AUTO-DISCOVERY: Look for templates/pptx_name/ppt/media/
+            # Extract media from PPTX first
+            extracted_media = extract_media_from_pptx(str(tmp_path), extract_dir)
+            
+            # Try auto-discover folder
             auto_discovered = None
             if templates_dir:
                 expected_media_path = Path(templates_dir) / pptx_name / "ppt" / "media"
@@ -638,16 +814,13 @@ def main():
                     auto_discovered = str(expected_media_path)
                     st.success(f"✓ Auto-discovered: {expected_media_path}")
                 else:
-                    st.info(f"ℹ️ No auto-discovery folder at {expected_media_path}")
+                    st.info(f"ℹ️ No auto-folder at {expected_media_path}")
             
-            # Also extract media from PPTX itself as fallback
-            extracted_media = extract_media_from_pptx(str(tmp_path), extract_dir)
-            
-            # Set up asset sources
+            # Build asset sources (uploaded starts empty)
             st.session_state.asset_sources = {
                 'folder': auto_discovered,
                 'extracted_media': extracted_media,
-                'uploaded': st.session_state.uploaded_images
+                'uploaded': {}
             }
             
             # Extract layout
@@ -667,45 +840,20 @@ def main():
                 }
                 st.session_state.bg_settings = {'type': 'pptx', 'value': None}
                 
+                # Track missing images
+                missing = [el for el in layout['elements'] 
+                          if el.get('type') == 'image' and not el.get('image_path')]
+                st.session_state.missing_elements = missing
+                
                 matched = sum(1 for e in layout['elements'] if e.get('image_path'))
-                st.success(f"Loaded {len(layout['elements'])} elements, {matched} images matched")
+                total_img = sum(1 for e in layout['elements'] if e.get('type') == 'image')
+                
+                if missing:
+                    st.warning(f"{len(missing)} images missing - upload below")
+                else:
+                    st.success(f"All {total_img} images matched!")
+                
                 st.rerun()
-        
-        # UPLOAD FALLBACK
-        if st.session_state.layout:
-            st.divider()
-            st.header("📤 Upload Images (Fallback)")
-            st.caption("Upload images if auto-discovery didn't find them")
-            
-            uploaded_imgs = st.file_uploader(
-                "Upload images", 
-                type=['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'],
-                accept_multiple_files=True
-            )
-            
-            if uploaded_imgs:
-                for img_file in uploaded_imgs:
-                    if img_file.name not in st.session_state.uploaded_images:
-                        # Save to temp
-                        temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=Path(img_file.name).suffix)
-                        temp_path.write(img_file.getvalue())
-                        temp_path.close()
-                        st.session_state.uploaded_images[img_file.name] = temp_path.name
-                
-                # Update asset sources
-                st.session_state.asset_sources['uploaded'] = st.session_state.uploaded_images
-                
-                # Re-extract with new images
-                if st.button("Re-match with uploaded images"):
-                    layout = harvest_ppt(
-                        st.session_state.pptx_path,
-                        target,
-                        st.session_state.asset_sources,
-                        st.session_state.manual_mappings
-                    )
-                    st.session_state.layout = layout
-                    st.success(f"Rematched with {len(st.session_state.uploaded_images)} uploaded images")
-                    st.rerun()
         
         if st.session_state.layout:
             layout = st.session_state.layout
@@ -717,24 +865,127 @@ def main():
             shapes = sum(1 for e in layout['elements'] if e['type'] == 'shape')
             texts = sum(1 for e in layout['elements'] if e['type'] == 'text')
             images = sum(1 for e in layout['elements'] if e['type'] == 'image')
-            mapped = sum(1 for e in layout['elements'] if e.get('image_path'))
+            matched = sum(1 for e in layout['elements'] if e.get('image_path'))
             
             st.metric("Shapes", shapes)
             st.metric("Text", texts)
-            st.metric(f"Images {mapped}/{images}", images)
+            st.metric(f"Images {matched}/{images}", images)
             
-            # Show asset sources
-            with st.expander("Asset Sources"):
-                for source, path in st.session_state.asset_sources.items():
-                    if path:
-                        if isinstance(path, dict):
-                            st.text(f"{source}: {len(path)} files")
-                        else:
-                            st.text(f"{source}: {path}")
+            # MISSING IMAGES SECTION
+            missing = [el for el in layout['elements'] 
+                      if el.get('type') == 'image' and not el.get('image_path')]
             
-            # TEMPLATE MANAGEMENT
+            if missing:
+                st.divider()
+                st.header(f"⚠️ Missing Images ({len(missing)})")
+                st.caption("Auto-match failed. Select existing or upload new.")
+                
+                # Build pool of available images for manual selection
+                manual_pool = {}
+                if st.session_state.asset_sources.get('folder'):
+                    manual_pool.update(get_images_from_folder(st.session_state.asset_sources['folder']))
+                if st.session_state.asset_sources.get('extracted_media'):
+                    manual_pool.update(get_images_from_folder(st.session_state.asset_sources['extracted_media']))
+                manual_pool.update(st.session_state.uploaded_images)
+                
+                for el in missing:
+                    el_id = el['id']
+                    suggestion = el.get('suggested_filename', 'image.png')
+                    
+                    with st.expander(f"{el_id} (need: {suggestion})", expanded=True):
+                        # Manual selection from existing
+                        if manual_pool:
+                            options = ["(Select existing...)"] + sorted(manual_pool.keys())
+                            selected = st.selectbox(
+                                "Use existing",
+                                options,
+                                key=f"manual_select_{el_id}"
+                            )
+                            
+                            if selected != "(Select existing...)":
+                                st.session_state.manual_mappings[el_id] = manual_pool[selected]
+                                # Re-extract
+                                layout = harvest_ppt(
+                                    st.session_state.pptx_path,
+                                    target,
+                                    st.session_state.asset_sources,
+                                    st.session_state.manual_mappings
+                                )
+                                st.session_state.layout = layout
+                                st.success(f"Mapped {el_id} to {selected}")
+                                st.rerun()
+                        
+                        # Upload new file specifically for this element
+                        st.caption("Or upload new file:")
+                        uploaded_file = st.file_uploader(
+                            f"Upload for {el_id}",
+                            type=['png', 'jpg', 'jpeg', 'gif', 'webp'],
+                            key=f"upload_{el_id}"
+                        )
+                        
+                        if uploaded_file:
+                            # Save to temp
+                            temp_path = Path(tempfile.gettempdir()) / uploaded_file.name
+                            with open(temp_path, 'wb') as f:
+                                f.write(uploaded_file.getvalue())
+                            
+                            # Add to uploaded pool
+                            st.session_state.uploaded_images[uploaded_file.name] = str(temp_path)
+                            st.session_state.asset_sources['uploaded'] = st.session_state.uploaded_images
+                            
+                            # Auto-match will find it now, or set manual
+                            st.session_state.manual_mappings[el_id] = str(temp_path)
+                            
+                            # Re-extract
+                            layout = harvest_ppt(
+                                st.session_state.pptx_path,
+                                target,
+                                st.session_state.asset_sources,
+                                st.session_state.manual_mappings
+                            )
+                            st.session_state.layout = layout
+                            st.success(f"Uploaded and mapped to {el_id}")
+                            st.rerun()
+            
+            # GENERAL UPLOAD (for any purpose)
             st.divider()
-            st.header("🎨 Save Template")
+            st.header("📤 General Upload")
+            st.caption("Upload images to add to pool")
+            
+            general_uploads = st.file_uploader(
+                "Upload images",
+                type=['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'],
+                accept_multiple_files=True,
+                key="general_upload"
+            )
+            
+            if general_uploads:
+                added = 0
+                for img_file in general_uploads:
+                    if img_file.name not in st.session_state.uploaded_images:
+                        temp_path = Path(tempfile.gettempdir()) / img_file.name
+                        with open(temp_path, 'wb') as f:
+                            f.write(img_file.getvalue())
+                        st.session_state.uploaded_images[img_file.name] = str(temp_path)
+                        added += 1
+                
+                if added > 0:
+                    st.session_state.asset_sources['uploaded'] = st.session_state.uploaded_images
+                    st.success(f"Added {added} images to pool")
+                    
+                    # Re-extract to auto-match new uploads
+                    layout = harvest_ppt(
+                        st.session_state.pptx_path,
+                        target,
+                        st.session_state.asset_sources,
+                        st.session_state.manual_mappings
+                    )
+                    st.session_state.layout = layout
+                    st.rerun()
+            
+            # TEMPLATES
+            st.divider()
+            st.header("🎨 Templates")
             
             template_names = list(st.session_state.templates.keys())
             selected_template = st.selectbox(
@@ -773,72 +1024,6 @@ def main():
                 st.success(f"Saved: {new_template_name}")
                 st.rerun()
             
-            # ELEMENT MAPPING
-            st.divider()
-            st.header("🎯 Element Images")
-            st.caption("Manual override if auto-match failed")
-            
-            all_images = {}
-            if st.session_state.asset_sources.get('folder'):
-                all_images.update(get_images_from_folder(st.session_state.asset_sources['folder']))
-            if st.session_state.asset_sources.get('extracted_media'):
-                all_images.update(get_images_from_folder(st.session_state.asset_sources['extracted_media']))
-            all_images.update(st.session_state.uploaded_images)
-            
-            image_options = ["(Auto-match)"] + sorted(all_images.keys())
-            
-            image_shape_candidates = [e for e in layout['elements'] if e['type'] in ['image', 'shape']]
-            
-            for el in image_shape_candidates:
-                original_id = el['id']
-                current_mapping = st.session_state.manual_mappings.get(original_id, "")
-                
-                with st.expander(f"{original_id[:25]}", expanded=False):
-                    # Show alt text if available
-                    if el.get('alt_text'):
-                        st.caption(f"Alt text: {el['alt_text']}")
-                    
-                    # Show current match
-                    if el.get('image_path'):
-                        src = el.get('match_source', 'unknown')
-                        st.success(f"✓ {src}: {Path(el['image_path']).name}")
-                    else:
-                        st.error("✗ No image matched")
-                    
-                    # Manual override
-                    current_img_name = Path(current_mapping).name if current_mapping else "(Auto-match)"
-                    
-                    selected_img = st.selectbox(
-                        "Override",
-                        image_options,
-                        index=image_options.index(current_img_name) if current_img_name in image_options else 0,
-                        key=f"manual_img_{original_id}"
-                    )
-                    
-                    if selected_img == "(Auto-match)":
-                        if original_id in st.session_state.manual_mappings:
-                            del st.session_state.manual_mappings[original_id]
-                            layout = harvest_ppt(
-                                st.session_state.pptx_path,
-                                target,
-                                st.session_state.asset_sources,
-                                st.session_state.manual_mappings
-                            )
-                            st.session_state.layout = layout
-                            st.rerun()
-                    else:
-                        full_path = all_images[selected_img]
-                        if st.session_state.manual_mappings.get(original_id) != full_path:
-                            st.session_state.manual_mappings[original_id] = full_path
-                            layout = harvest_ppt(
-                                st.session_state.pptx_path,
-                                target,
-                                st.session_state.asset_sources,
-                                st.session_state.manual_mappings
-                            )
-                            st.session_state.layout = layout
-                            st.rerun()
-            
             # BACKGROUND
             st.divider()
             st.header("🖼️ Background")
@@ -855,12 +1040,18 @@ def main():
                 st.session_state.bg_settings = {'type': 'color', 'value': rgb}
             
             elif bg_opt == "Image":
-                if all_images:
-                    bg_img_name = st.selectbox("Select", list(all_images.keys()), key="bg_image_select")
-                    if bg_img_name:
-                        bg_path = all_images[bg_img_name]
+                all_bg = {}
+                if st.session_state.asset_sources.get('folder'):
+                    all_bg.update(get_images_from_folder(st.session_state.asset_sources['folder']))
+                if st.session_state.asset_sources.get('extracted_media'):
+                    all_bg.update(get_images_from_folder(st.session_state.asset_sources['extracted_media']))
+                all_bg.update(st.session_state.uploaded_images)
+                
+                if all_bg:
+                    bg_name = st.selectbox("Select", list(all_bg.keys()), key="bg_select")
+                    if bg_name:
                         try:
-                            bg_img = Image.open(bg_path).convert('RGB')
+                            bg_img = Image.open(all_bg[bg_name]).convert('RGB')
                             st.session_state.bg_settings = {'type': 'image', 'value': bg_img}
                         except Exception as e:
                             st.error(f"Error: {e}")
@@ -876,18 +1067,17 @@ def main():
     if not st.session_state.layout:
         st.info("""
         **Workflow:**
-        1. Set Templates directory (e.g., `./templates`)
-        2. Upload PPTX (e.g., `insurance tips.pptx`)
-        3. Tool auto-looks in `templates/insurance tips/ppt/media/`
-        4. Upload fallback images if needed
-        5. Configure animations
+        1. Upload PPTX
+        2. Tool auto-matches: folder → extracted PPTX media
+        3. Missing images shown with suggestions
+        4. Manual select existing or upload new
+        5. Text always renders regardless
         6. Export
         """)
         return
     
     layout = st.session_state.layout
     
-    # Main area
     col_preview, col_controls = st.columns([2, 1])
     
     with col_controls:
@@ -968,7 +1158,8 @@ def main():
     with col_preview:
         bg_info = st.session_state.bg_settings['type']
         sources = [k for k, v in st.session_state.asset_sources.items() if v]
-        st.caption(f"Sources: {', '.join(sources)} | BG: {bg_info} | Anims: {len(st.session_state.anim_settings)}")
+        missing_count = len([e for e in layout['elements'] if e.get('type') == 'image' and not e.get('image_path')])
+        st.caption(f"Sources: {', '.join(sources)} | BG: {bg_info} | Missing: {missing_count} | Anims: {len(st.session_state.anim_settings)}")
         
         preview_time = st.session_state.export_duration / 2 if hasattr(st.session_state, 'export_duration') else 2.5
         frame = render_frame(
@@ -1004,13 +1195,19 @@ def main():
                 anim_status = f" [{anim['style']}]"
             
             if el['type'] == 'image':
-                path = el.get('image_path', 'NOT MAPPED')
-                status = "✓" if path else "✗"
-                src = f"({el.get('match_source', '?')})" if path else ""
+                path = el.get('image_path', 'MISSING')
+                status = "✓" if path != 'MISSING' else "✗"
+                src = f"({el.get('match_source', '?')})" if path != 'MISSING' else f"[need: {el.get('suggested_filename', 'image.png')}]"
                 alt = f" [alt:{el.get('alt_text', 'none')}]" if el.get('alt_text') else ""
                 st.text(f"{status} 🖼️ {el['id']}{alt} {src}{anim_status}")
             elif el['type'] == 'text':
-                st.text(f"📝 {el['id']}{anim_status}")
+                align_info = ""
+                if el.get('text_props'):
+                    v_align = el['text_props'].get('vertical_align', 'top')
+                    if el['text_props'].get('paragraphs'):
+                        h_align = el['text_props']['paragraphs'][0].get('align', 'left')
+                        align_info = f" [{h_align},{v_align}]"
+                st.text(f"📝 {el['id']}{align_info}{anim_status}")
             else:
                 st.text(f"⬜ {el['id']}{anim_status}")
     
