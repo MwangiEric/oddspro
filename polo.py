@@ -9,7 +9,390 @@ from datetime import datetime
 import zipfile
 import textwrap
 
-st.set_page_config(page_title="Bulk Ad Generator", layout="wide")
+st.set_page_config(page_title="Bulk Ad 
+# Read the current file and enhance SVG support
+with open('/mnt/kimi/output/template_studio.py', 'r') as f:
+    content = f.read()
+
+# Find the imports section and add cairosvg
+import_section = content.find('import streamlit')
+if import_section != -1:
+    # Add cairosvg import after other imports
+    new_import = '''import streamlit as st
+import json
+import os
+import re
+import base64
+from PIL import Image, ImageDraw, ImageFont, ImageColor
+from io import BytesIO
+from datetime import datetime
+
+# Try to import cairosvg for SVG rendering
+try:
+    import cairosvg
+    CAIROSVG_AVAILABLE = True
+except ImportError:
+    CAIROSVG_AVAILABLE = False
+    st.warning("cairosvg not installed. SVG support limited to placeholders.")'''
+    
+    content = content.replace('import streamlit as st\nimport json\nimport os\nimport re\nfrom PIL import Image, ImageDraw, ImageFont, ImageColor\nfrom io import BytesIO\nfrom datetime import datetime', new_import)
+
+# Find the load_image function and add SVG loading
+load_image_section = content.find('def load_image(src):')
+if load_image_section != -1:
+    # Replace the load_image function
+    old_func = '''def load_image(src):
+    """Load image from URL or base64"""
+    if not src or not isinstance(src, str):
+        return None
+    
+    try:
+        if src.startswith('data:image'):
+            base64_data = src.split(',')[1]
+            img_data = base64.b64decode(base64_data)
+            return Image.open(BytesIO(img_data)).convert('RGBA')
+        elif src.startswith('http'):
+            import requests
+            response = requests.get(src, timeout=10)
+            return Image.open(BytesIO(response.content)).convert('RGBA')
+    except:
+        pass
+    return None'''
+    
+    new_func = '''def load_image(src):
+    """Load image from URL or base64, including SVG"""
+    if not src or not isinstance(src, str):
+        return None
+    
+    try:
+        # Handle SVG
+        if 'svg' in src.lower() or src.startswith('data:image/svg'):
+            return render_svg_to_image(src)
+        
+        # Handle base64
+        if src.startswith('data:image'):
+            base64_data = src.split(',')[1]
+            img_data = base64.b64decode(base64_data)
+            return Image.open(BytesIO(img_data)).convert('RGBA')
+        
+        # Handle URL
+        elif src.startswith('http'):
+            import requests
+            response = requests.get(src, timeout=10)
+            content_type = response.headers.get('content-type', '')
+            
+            if 'svg' in content_type.lower():
+                return render_svg_to_image(response.text)
+            else:
+                return Image.open(BytesIO(response.content)).convert('RGBA')
+    except Exception as e:
+        pass
+    return None
+
+def render_svg_to_image(svg_data, width=None, height=None):
+    """Convert SVG to PIL Image using cairosvg or fallback"""
+    if not CAIROSVG_AVAILABLE:
+        return None
+    
+    try:
+        # If it's a data URI, extract the SVG
+        if svg_data.startswith('data:image/svg'):
+            svg_content = svg_data.split(',')[1]
+            if svg_data.startswith('data:image/svg+xml;base64'):
+                svg_bytes = base64.b64decode(svg_content)
+            else:
+                svg_bytes = svg_content.encode('utf-8')
+        else:
+            svg_bytes = svg_data.encode('utf-8') if isinstance(svg_data, str) else svg_data
+        
+        # Convert to PNG using cairosvg
+        png_data = cairosvg.svg2png(bytestring=svg_bytes, 
+                                     output_width=width, 
+                                     output_height=height)
+        
+        return Image.open(BytesIO(png_data)).convert('RGBA')
+    except Exception as e:
+        return None'''
+    
+    content = content.replace(old_func, new_func)
+
+# Find the draw_shape function and add more figure subtypes
+draw_shape_section = content.find('def draw_shape(draw, x, y, w, h, subtype, fill, stroke, stroke_w, radius=0):')
+if draw_shape_section != -1:
+    old_draw = '''def draw_shape(draw, x, y, w, h, subtype, fill, stroke, stroke_w, radius=0):
+    """Draw all shape types"""
+    
+    if subtype == 'rect':
+        if radius > 0:
+            if stroke and stroke[3] > 0:
+                draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, 
+                                     fill=fill, outline=stroke, width=int(stroke_w))
+            else:
+                draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, fill=fill)
+        else:
+            if stroke and stroke[3] > 0:
+                draw.rectangle([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w))
+            else:
+                draw.rectangle([x, y, x+w, y+h], fill=fill)
+                
+    elif subtype == 'circle':
+        if stroke and stroke[3] > 0:
+            draw.ellipse([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w))
+        else:
+            draw.ellipse([x, y, x+w, y+h], fill=fill)
+            
+    elif subtype == 'rightTriangle':
+        points = [(x, y), (x+w, y), (x, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'leftTriangle':
+        points = [(x, y), (x+w, y), (x+w, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'topTriangle':
+        points = [(x+w/2, y), (x, y+h), (x+w, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'bottomTriangle':
+        points = [(x, y), (x+w, y), (x+w/2, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'diamond':
+        points = [(x+w/2, y), (x+w, y+h/2), (x+w/2, y+h), (x, y+h/2)]
+        draw.polygon(points, fill=fill, outline=stroke)'''
+    
+    new_draw = '''def draw_shape(draw, x, y, w, h, subtype, fill, stroke, stroke_w, radius=0):
+    """Draw all figure/shape types"""
+    
+    # Basic shapes
+    if subtype == 'rect' or subtype == 'rectangle':
+        if radius > 0:
+            if stroke and stroke[3] > 0:
+                draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, 
+                                     fill=fill, outline=stroke, width=int(stroke_w))
+            else:
+                draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, fill=fill)
+        else:
+            if stroke and stroke[3] > 0:
+                draw.rectangle([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w))
+            else:
+                draw.rectangle([x, y, x+w, y+h], fill=fill)
+                
+    elif subtype == 'circle' or subtype == 'ellipse':
+        if stroke and stroke[3] > 0:
+            draw.ellipse([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w))
+        else:
+            draw.ellipse([x, y, x+w, y+h], fill=fill)
+    
+    # Triangles
+    elif subtype == 'rightTriangle':
+        points = [(x, y), (x+w, y), (x, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'leftTriangle':
+        points = [(x, y), (x+w, y), (x+w, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'topTriangle' or subtype == 'triangle':
+        points = [(x+w/2, y), (x, y+h), (x+w, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'bottomTriangle':
+        points = [(x, y), (x+w, y), (x+w/2, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+    
+    # Quadrilaterals
+    elif subtype == 'diamond' or subtype == 'rhombus':
+        points = [(x+w/2, y), (x+w, y+h/2), (x+w/2, y+h), (x, y+h/2)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'trapezoid' or subtype == 'trapezium':
+        offset = w * 0.2
+        points = [(x+offset, y), (x+w-offset, y), (x+w, y+h), (x, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'parallelogram':
+        offset = w * 0.15
+        points = [(x+offset, y), (x+w, y), (x+w-offset, y+h), (x, y+h)]
+        draw.polygon(points, fill=fill, outline=stroke)
+    
+    # Other shapes
+    elif subtype == 'pentagon':
+        import math
+        points = []
+        cx, cy = x + w/2, y + h/2
+        radius = min(w, h) / 2
+        for i in range(5):
+            angle = (i * 2 * math.pi / 5) - (math.pi / 2)
+            px = cx + radius * math.cos(angle)
+            py = cy + radius * math.sin(angle)
+            points.append((px, py))
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'hexagon':
+        import math
+        points = []
+        cx, cy = x + w/2, y + h/2
+        radius = min(w, h) / 2
+        for i in range(6):
+            angle = (i * 2 * math.pi / 6) - (math.pi / 2)
+            px = cx + radius * math.cos(angle)
+            py = cy + radius * math.sin(angle)
+            points.append((px, py))
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'octagon':
+        import math
+        points = []
+        cx, cy = x + w/2, y + h/2
+        radius = min(w, h) / 2
+        for i in range(8):
+            angle = (i * 2 * math.pi / 8) - (math.pi / 2)
+            px = cx + radius * math.cos(angle)
+            py = cy + radius * math.sin(angle)
+            points.append((px, py))
+        draw.polygon(points, fill=fill, outline=stroke)
+        
+    elif subtype == 'cross':
+        thickness = min(w, h) * 0.2
+        # Vertical bar
+        draw.rectangle([x+w/2-thickness/2, y, x+w/2+thickness/2, y+h], fill=fill)
+        # Horizontal bar
+        draw.rectangle([x, y+h/2-thickness/2, x+w, y+h/2+thickness/2], fill=fill)
+        
+    elif subtype == 'heart':
+        import math
+        # Simplified heart shape
+        cx, cy = x + w/2, y + h/2
+        # Two top circles
+        r = min(w, h) / 4
+        draw.ellipse([cx-w/4-r, cy-h/4-r, cx-w/4+r, cy-h/4+r], fill=fill)
+        draw.ellipse([cx+w/4-r, cy-h/4-r, cx+w/4+r, cy-h/4+r], fill=fill)
+        # Bottom triangle
+        points = [(cx-w/2, cy), (cx, cy+h/2), (cx+w/2, cy)]
+        draw.polygon(points, fill=fill)
+        
+    elif subtype == 'crescent':
+        import math
+        # Draw two overlapping circles to create crescent
+        cx, cy = x + w/2, y + h/2
+        r = min(w, h) / 2
+        # Main circle
+        draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=fill)
+        # Cutout circle (slightly offset, using background color)
+        offset = r * 0.3
+        bg_color = (255, 255, 255, 0)  # Transparent
+        draw.ellipse([cx-r+offset, cy-r, cx+r+offset, cy+r], fill=bg_color)
+        
+    elif subtype == 'ring' or subtype == 'donut':
+        import math
+        cx, cy = x + w/2, y + h/2
+        outer_r = min(w, h) / 2
+        inner_r = outer_r * 0.6
+        # Draw outer circle
+        draw.ellipse([cx-outer_r, cy-outer_r, cx+outer_r, cy+outer_r], fill=fill)
+        # Cutout inner
+        bg_color = (255, 255, 255, 0)
+        draw.ellipse([cx-inner_r, cy-inner_r, cx+inner_r, cy+inner_r], fill=bg_color)
+        
+    else:
+        # Default to rectangle for unknown types
+        draw.rectangle([x, y, x+w, y+h], fill=fill, outline=stroke, width=int(stroke_w) if stroke else 0)'''
+    
+    content = content.replace(old_draw, new_draw)
+
+# Find the SVG layer handling and enhance it
+svg_section = content.find("elif layer_type == 'svg':")
+if svg_section != -1:
+    old_svg = '''elif layer_type == 'svg':
+                # SVG placeholder
+                x, y = layer['x'], layer['y']
+                lw, lh = layer['width'], layer['height']
+                fill = parse_color(layer.get('fill', 'gray'))
+                fill = (fill[0], fill[1], fill[2], int(fill[3] * opacity))
+                
+                svg_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(svg_layer)
+                draw.rectangle([x, y, x+lw, y+lh], fill=fill, outline='darkgray', width=2)
+                
+                # Try to render SVG text
+                try:
+                    font = ImageFont.load_default()
+                    draw.text((x+5, y+5), "SVG", fill='white')
+                except:
+                    pass
+                
+                img = Image.alpha_composite(img, svg_layer)'''
+    
+    new_svg = '''elif layer_type == 'svg':
+                # Enhanced SVG support
+                x, y = layer['x'], layer['y']
+                lw, lh = layer['width'], layer['height']
+                
+                svg_src = layer.get('src', '')
+                svg_data = layer.get('svgData', '')
+                
+                svg_image = None
+                
+                # Try to render actual SVG
+                if svg_src and CAIROSVG_AVAILABLE:
+                    svg_image = render_svg_to_image(svg_src, int(lw), int(lh))
+                elif svg_data and CAIROSVG_AVAILABLE:
+                    svg_image = render_svg_to_image(svg_data, int(lw), int(lh))
+                
+                if svg_image:
+                    # Apply opacity
+                    if opacity < 1:
+                        alpha = svg_image.split()[-1]
+                        alpha = alpha.point(lambda p: int(p * opacity))
+                        svg_image.putalpha(alpha)
+                    
+                    # Apply rotation
+                    rotation = layer.get('rotation', 0)
+                    if rotation != 0:
+                        svg_image = svg_image.rotate(-rotation, expand=True, 
+                                                    resample=Image.Resampling.BICUBIC)
+                    
+                    img.paste(svg_image, (int(x), int(y)), svg_image)
+                else:
+                    # Fallback: placeholder
+                    fill = parse_color(layer.get('fill', 'gray'))
+                    fill = (fill[0], fill[1], fill[2], int(fill[3] * opacity))
+                    
+                    svg_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+                    draw = ImageDraw.Draw(svg_layer)
+                    draw.rectangle([x, y, x+lw, y+lh], fill=fill, outline='darkgray', width=2)
+                    
+                    try:
+                        font = ImageFont.load_default()
+                        draw.text((x+5, y+5), "SVG", fill='white')
+                        draw.text((x+5, y+20), "(install cairosvg)", fill='white')
+                    except:
+                        pass
+                    
+                    img = Image.alpha_composite(img, svg_layer)'''
+    
+    content = content.replace(old_svg, new_svg)
+
+# Write the enhanced file
+output_path = '/mnt/kimi/output/template_studio.py'
+with open(output_path, 'w') as f:
+    f.write(content)
+
+print(f"✅ Enhanced Template Studio saved: {output_path}")
+print(f"\n🔧 ENHANCEMENTS:")
+print("   ✓ SVG rendering with cairosvg (install: pip install cairosvg)")
+print("   ✓ SVG from URL, base64, or inline data")
+print("   ✓ 15+ figure shapes supported:")
+print("     - Basic: rect, circle, ellipse")
+print("     - Triangles: right, left, top, bottom")
+print("     - Quadrilaterals: diamond, trapezoid, parallelogram")
+print("     - Polygons: pentagon, hexagon, octagon")
+print("     - Special: cross, heart, crescent, ring/donut")
+print("\n📦 TO INSTALL SVG SUPPORT:")
+print("   pip install cairosvg")
+print("\n🚀 TO RUN:")
+print("   streamlit run template_studio.py")", layout="wide")
 
 # API Configuration - CORRECT ENDPOINT
 IMAGAPI_BASE = "https://imagapi.vercel.app/api/v1"
