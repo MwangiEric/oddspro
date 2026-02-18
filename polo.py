@@ -8,17 +8,7 @@ import pandas as pd
 from datetime import datetime
 import zipfile
 import textwrap
-
-st.set_page_config(page_title="Bulk Ad 
-# Read the current file and enhance SVG support
-with open('/mnt/kimi/output/template_studio.py', 'r') as f:
-    content = f.read()
-
-# Find the imports section and add cairosvg
-import_section = content.find('import streamlit')
-if import_section != -1:
-    # Add cairosvg import after other imports
-    new_import = '''import streamlit as st
+import streamlit as st
 import json
 import os
 import re
