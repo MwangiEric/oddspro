@@ -2,10 +2,10 @@ import streamlit as st
 import json
 import requests
 import base64
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
 import re
 import logging
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 # ---------- Helper functions ----------
 def parse_color(color_str):
     """Convert rgba(...), rgb(...), or #RRGGBB to a tuple (R,G,B,A)."""
+    if not isinstance(color_str, str):
+        return color_str  # assume already a tuple? but we expect string.
     if color_str.startswith('rgba'):
-        # rgba(255,255,255,1) or rgba(255,255,255,0.5)
         parts = re.findall(r'[\d.]+', color_str)
         if len(parts) == 4:
             return tuple(int(float(p)) if i<3 else float(p) for i,p in enumerate(parts))
@@ -35,12 +36,10 @@ def parse_color(color_str):
 def load_image_from_src(src):
     """Load image from URL or data URI. Returns PIL Image."""
     if src.startswith('data:image'):
-        # Data URI
         header, encoded = src.split(',', 1)
         image_data = base64.b64decode(encoded)
         return Image.open(BytesIO(image_data)).convert('RGBA')
     else:
-        # Assume URL
         response = requests.get(src, timeout=10)
         response.raise_for_status()
         return Image.open(BytesIO(response.content)).convert('RGBA')
@@ -59,7 +58,6 @@ def apply_crop(img, crop_x, crop_y, crop_w, crop_h):
 def resize_image(img, target_w, target_h, keep_ratio, stretch):
     """Resize image according to Polotno rules."""
     if keep_ratio and not stretch:
-        # Fit inside, preserve ratio, center on transparent background
         img.thumbnail((target_w, target_h), Image.Resampling.LANCZOS)
         new_img = Image.new('RGBA', (target_w, target_h), (0,0,0,0))
         paste_x = (target_w - img.width) // 2
@@ -67,14 +65,10 @@ def resize_image(img, target_w, target_h, keep_ratio, stretch):
         new_img.paste(img, (paste_x, paste_y), img)
         return new_img
     else:
-        # Stretch to exact size
         return img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
 def apply_flip(img, flip_x, flip_y):
     """Apply horizontal/vertical flips."""
-    if flip_x and flip_y:
-        return img.transpose(Image.Transpose.TRANSPOSE).transpose(Image.Transpose.FLIP_TOP_BOTTOM)  # 90° rotation + flip? Actually we want both flips = rotate 180? Simpler: transpose(ROTATE_180) if both true.
-        # But Pillow doesn't have direct both-flip. We'll do two steps.
     if flip_x:
         img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
     if flip_y:
@@ -95,11 +89,26 @@ def rotate_element(img, angle, bg_color=(0,0,0,0)):
         return img
     return img.rotate(angle, expand=True, fillcolor=bg_color)
 
+def draw_border(img, border_size, border_color):
+    """Draw a border around the image (on the same layer)."""
+    if border_size <= 0:
+        return img
+    draw = ImageDraw.Draw(img)
+    draw.rectangle(
+        [(0, 0), (img.width-1, img.height-1)],
+        outline=parse_color(border_color),
+        width=border_size
+    )
+    return img
+
 # ---------- Main rendering function ----------
-def render_page(page_data):
+def render_page(page_data, root_width, root_height):
     """Render a single Polotno page into a PIL Image."""
-    width = int(page_data.get('width', 1080))
-    height = int(page_data.get('height', 1080))
+    # Page dimensions: if "auto", use root; else convert to int
+    raw_w = page_data.get('width', 'auto')
+    raw_h = page_data.get('height', 'auto')
+    width = root_width if raw_w == 'auto' else int(round(float(raw_w)))
+    height = root_height if raw_h == 'auto' else int(round(float(raw_h)))
 
     # Create base canvas
     bg = page_data.get('background', 'white')
@@ -117,21 +126,25 @@ def render_page(page_data):
             canvas = None
 
     if canvas is None:
-        # Treat as color
         bg_color = parse_color(bg) if isinstance(bg, str) else (255,255,255,255)
         canvas = Image.new('RGBA', (width, height), bg_color)
 
     children = page_data.get('children', [])
-    # Sort children? Polotno order is as given (first at bottom). We'll process in list order.
     for child in children:
         if not child.get('visible', True):
             continue
 
         elem_type = child.get('type')
-        x = child.get('x', 0)
-        y = child.get('y', 0)
-        elem_w = child.get('width', 100)
-        elem_h = child.get('height', 100)
+        # Convert coordinates to int (rounding)
+        try:
+            x = int(round(float(child.get('x', 0))))
+            y = int(round(float(child.get('y', 0))))
+            elem_w = int(round(float(child.get('width', 100))))
+            elem_h = int(round(float(child.get('height', 100))))
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid dimensions for element {child.get('id','unknown')}: {e}")
+            continue
+
         rotation = child.get('rotation', 0)
         opacity = child.get('opacity', 1.0)
 
@@ -139,7 +152,6 @@ def render_page(page_data):
         elem_img = Image.new('RGBA', (elem_w, elem_h), (0,0,0,0))
         draw = ImageDraw.Draw(elem_img)
 
-        # --- Render element content ---
         try:
             if elem_type == 'image':
                 src = child.get('src', '')
@@ -160,19 +172,28 @@ def render_page(page_data):
                 flip_x = child.get('flipX', False)
                 flip_y = child.get('flipY', False)
                 img = apply_flip(img, flip_x, flip_y)
-                # Paste onto elem_img (already correct size)
+                # Paste onto elem_img
                 elem_img.paste(img, (0,0), img)
+
+                # Border (quick win)
+                border_size = child.get('borderSize', 0)
+                if border_size > 0:
+                    border_color = child.get('borderColor', 'black')
+                    elem_img = draw_border(elem_img, border_size, border_color)
 
             elif elem_type == 'text':
                 text = child.get('text', '')
                 if not text:
                     continue
-                font_size = child.get('fontSize', 24)
+                font_size = int(round(float(child.get('fontSize', 24))))
                 try:
+                    # Try common font names
                     font = ImageFont.truetype("arial.ttf", font_size)
                 except:
-                    font = ImageFont.load_default()
-                    # scale default to approximate size? We'll just use default.
+                    try:
+                        font = ImageFont.truetype("DejaVuSans.ttf", font_size)
+                    except:
+                        font = ImageFont.load_default()
                 align = child.get('align', 'left')
                 v_align = child.get('verticalAlign', 'top')
                 line_height = child.get('lineHeight', 1.2)
@@ -180,7 +201,6 @@ def render_page(page_data):
                 stroke_color = child.get('stroke', 'black')
                 fill_color = child.get('fill', 'black')
 
-                # Split into lines
                 lines = text.split('\n')
                 # Calculate line dimensions
                 line_heights = []
@@ -202,9 +222,7 @@ def render_page(page_data):
                 else:  # bottom
                     y_offset = elem_h - total_height
 
-                # Draw each line
                 for i, line in enumerate(lines):
-                    # Horizontal alignment
                     if align == 'left':
                         x_offset = 0
                     elif align == 'center':
@@ -212,7 +230,6 @@ def render_page(page_data):
                     else:  # right
                         x_offset = elem_w - line_widths[i]
 
-                    # Stroke then fill
                     if stroke_width > 0:
                         draw.text((x_offset, y_offset), line, font=font,
                                   fill=parse_color(stroke_color),
@@ -227,22 +244,20 @@ def render_page(page_data):
                 fill = child.get('fill', 'black')
                 stroke = child.get('stroke', 'black')
                 stroke_width = child.get('strokeWidth', 0)
-                # Only support rect and ellipse
                 if sub_type in ('rect', 'ellipse'):
                     coords = (0, 0, elem_w, elem_h)
                     if sub_type == 'rect':
                         draw.rectangle(coords, fill=parse_color(fill),
                                        outline=parse_color(stroke) if stroke_width>0 else None,
                                        width=stroke_width)
-                    else:  # ellipse
+                    else:
                         draw.ellipse(coords, fill=parse_color(fill),
                                      outline=parse_color(stroke) if stroke_width>0 else None,
                                      width=stroke_width)
                 else:
-                    # Unsupported figure type, skip
                     continue
             else:
-                # Unsupported element type
+                # Unsupported type – skip
                 continue
 
             # Apply opacity
@@ -253,8 +268,8 @@ def render_page(page_data):
             if rotation != 0:
                 elem_img = rotate_element(elem_img, rotation)
 
-            # Paste onto canvas at (x, y) – top-left of rotated bounding box
-            canvas.paste(elem_img, (int(x), int(y)), elem_img)
+            # Paste onto canvas
+            canvas.paste(elem_img, (x, y), elem_img)
 
         except Exception as e:
             logger.warning(f"Error rendering element {child.get('id', 'unknown')}: {e}")
@@ -272,18 +287,34 @@ uploaded_file = st.file_uploader("Choose a JSON file", type="json")
 if uploaded_file is not None:
     try:
         data = json.load(uploaded_file)
-        pages = data.get('pages', [])
-        if not pages:
-            st.error("No pages found in the JSON.")
-        else:
-            first_page = pages[0]
-            with st.spinner("Rendering page..."):
-                img = render_page(first_page)
-            st.image(img, caption="Rendered Page 1", use_container_width=True)
-
-            # Option to download
-            buf = BytesIO()
-            img.convert('RGB').save(buf, format='PNG')
-            st.download_button("Download as PNG", buf.getvalue(), file_name="page1.png", mime="image/png")
     except Exception as e:
-        st.error(f"Failed to process JSON: {e}")
+        st.error(f"Invalid JSON file: {e}")
+        st.stop()
+
+    # Get root canvas dimensions (fallback if page dimensions are "auto")
+    try:
+        root_width = int(round(float(data.get('width', 1080))))
+        root_height = int(round(float(data.get('height', 1080))))
+    except (ValueError, TypeError) as e:
+        st.error(f"Invalid root width/height: {e}")
+        st.stop()
+
+    pages = data.get('pages', [])
+    if not pages:
+        st.error("No pages found in the JSON.")
+        st.stop()
+
+    first_page = pages[0]
+    with st.spinner("Rendering page..."):
+        try:
+            img = render_page(first_page, root_width, root_height)
+        except Exception as e:
+            st.error(f"Rendering failed: {e}")
+            st.stop()
+
+    st.image(img, caption="Rendered Page 1", use_container_width=True)
+
+    # Option to download
+    buf = BytesIO()
+    img.convert('RGB').save(buf, format='PNG')
+    st.download_button("Download as PNG", buf.getvalue(), file_name="page1.png", mime="image/png")
