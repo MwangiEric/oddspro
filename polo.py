@@ -1,320 +1,668 @@
 import streamlit as st
 import json
 import requests
+from PIL import Image, ImageDraw, ImageFont
+import io
 import base64
 import re
-import logging
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
+from urllib.parse import unquote
+import numpy as np
+import tempfile
+import os
+from functools import lru_cache
+import hashlib
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Page config must be first
+st.set_page_config(page_title="Polotno Template Renderer", layout="wide")
 
-# ---------- Helper functions ----------
-def parse_color(color_str):
-    """Convert rgba(...), rgb(...), or #RRGGBB to a tuple (R,G,B,A)."""
-    if not isinstance(color_str, str):
-        return color_str  # assume already a tuple? but we expect string.
-    if color_str.startswith('rgba'):
-        parts = re.findall(r'[\d.]+', color_str)
-        if len(parts) == 4:
-            return tuple(int(float(p)) if i<3 else float(p) for i,p in enumerate(parts))
-    elif color_str.startswith('rgb'):
-        parts = re.findall(r'\d+', color_str)
-        if len(parts) == 3:
-            return tuple(int(p) for p in parts) + (255,)
-    elif color_str.startswith('#'):
-        h = color_str.lstrip('#')
-        if len(h) == 6:
-            return tuple(int(h[i:i+2], 16) for i in (0,2,4)) + (255,)
-        elif len(h) == 3:
-            return tuple(int(c*2, 16) for c in h) + (255,)
-    # Default fallback
-    return (0,0,0,255)
+# MoviePy imports
+try:
+    from moviepy import VideoClip
+except ImportError:
+    from moviepy.editor import VideoClip
 
-def load_image_from_src(src):
-    """Load image from URL or data URI. Returns PIL Image."""
-    if src.startswith('data:image'):
-        header, encoded = src.split(',', 1)
-        image_data = base64.b64decode(encoded)
-        return Image.open(BytesIO(image_data)).convert('RGBA')
-    else:
-        response = requests.get(src, timeout=10)
+# Constants
+CACHE_DIR = tempfile.gettempdir()
+
+@st.cache_data(ttl=3600)
+def fetch_product_data(feed_url):
+    """Fetch and cache product data from JSON feed."""
+    try:
+        response = requests.get(feed_url, timeout=15)
         response.raise_for_status()
-        return Image.open(BytesIO(response.content)).convert('RGBA')
-
-def apply_crop(img, crop_x, crop_y, crop_w, crop_h):
-    """Crop using normalized coordinates (0-1)."""
-    if crop_w == 1 and crop_h == 1 and crop_x == 0 and crop_y == 0:
-        return img
-    w, h = img.size
-    left = crop_x * w
-    top = crop_y * h
-    right = left + crop_w * w
-    bottom = top + crop_h * h
-    return img.crop((left, top, right, bottom))
-
-def resize_image(img, target_w, target_h, keep_ratio, stretch):
-    """Resize image according to Polotno rules."""
-    if keep_ratio and not stretch:
-        img.thumbnail((target_w, target_h), Image.Resampling.LANCZOS)
-        new_img = Image.new('RGBA', (target_w, target_h), (0,0,0,0))
-        paste_x = (target_w - img.width) // 2
-        paste_y = (target_h - img.height) // 2
-        new_img.paste(img, (paste_x, paste_y), img)
-        return new_img
-    else:
-        return img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-
-def apply_flip(img, flip_x, flip_y):
-    """Apply horizontal/vertical flips."""
-    if flip_x:
-        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-    if flip_y:
-        img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-    return img
-
-def apply_opacity(img, opacity):
-    """Multiply alpha channel by opacity (0-1)."""
-    if opacity >= 1:
-        return img
-    alpha = img.split()[3].point(lambda p: p * opacity)
-    img.putalpha(alpha)
-    return img
-
-def rotate_element(img, angle, bg_color=(0,0,0,0)):
-    """Rotate image around its center, expanding canvas to fit."""
-    if angle == 0:
-        return img
-    return img.rotate(angle, expand=True, fillcolor=bg_color)
-
-def draw_border(img, border_size, border_color):
-    """Draw a border around the image (on the same layer)."""
-    if border_size <= 0:
-        return img
-    draw = ImageDraw.Draw(img)
-    draw.rectangle(
-        [(0, 0), (img.width-1, img.height-1)],
-        outline=parse_color(border_color),
-        width=border_size
-    )
-    return img
-
-# ---------- Main rendering function ----------
-def render_page(page_data, root_width, root_height):
-    """Render a single Polotno page into a PIL Image."""
-    # Page dimensions: if "auto", use root; else convert to int
-    raw_w = page_data.get('width', 'auto')
-    raw_h = page_data.get('height', 'auto')
-    width = root_width if raw_w == 'auto' else int(round(float(raw_w)))
-    height = root_height if raw_h == 'auto' else int(round(float(raw_h)))
-
-    # Create base canvas
-    bg = page_data.get('background', 'white')
-    canvas = None
-
-    # Try background as image URL first
-    if isinstance(bg, str) and (bg.startswith('http') or bg.startswith('data:image')):
-        try:
-            bg_img = load_image_from_src(bg)
-            bg_img = bg_img.resize((width, height), Image.Resampling.LANCZOS)
-            canvas = Image.new('RGBA', (width, height), (0,0,0,0))
-            canvas.paste(bg_img, (0,0), bg_img)
-        except Exception as e:
-            logger.warning(f"Failed to load background image: {e}. Falling back to color.")
-            canvas = None
-
-    if canvas is None:
-        bg_color = parse_color(bg) if isinstance(bg, str) else (255,255,255,255)
-        canvas = Image.new('RGBA', (width, height), bg_color)
-
-    children = page_data.get('children', [])
-    for child in children:
-        if not child.get('visible', True):
-            continue
-
-        elem_type = child.get('type')
-        # Convert coordinates to int (rounding)
-        try:
-            x = int(round(float(child.get('x', 0))))
-            y = int(round(float(child.get('y', 0))))
-            elem_w = int(round(float(child.get('width', 100))))
-            elem_h = int(round(float(child.get('height', 100))))
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid dimensions for element {child.get('id','unknown')}: {e}")
-            continue
-
-        rotation = child.get('rotation', 0)
-        opacity = child.get('opacity', 1.0)
-
-        # Create a blank layer for this element
-        elem_img = Image.new('RGBA', (elem_w, elem_h), (0,0,0,0))
-        draw = ImageDraw.Draw(elem_img)
-
-        try:
-            if elem_type == 'image':
-                src = child.get('src', '')
-                if not src:
-                    continue
-                img = load_image_from_src(src)
-                # Crop
-                crop_x = child.get('cropX', 0)
-                crop_y = child.get('cropY', 0)
-                crop_w = child.get('cropWidth', 1)
-                crop_h = child.get('cropHeight', 1)
-                img = apply_crop(img, crop_x, crop_y, crop_w, crop_h)
-                # Resize
-                keep_ratio = child.get('keepRatio', True)
-                stretch = child.get('stretchEnabled', True)
-                img = resize_image(img, elem_w, elem_h, keep_ratio, stretch)
-                # Flip
-                flip_x = child.get('flipX', False)
-                flip_y = child.get('flipY', False)
-                img = apply_flip(img, flip_x, flip_y)
-                # Paste onto elem_img
-                elem_img.paste(img, (0,0), img)
-
-                # Border (quick win)
-                border_size = child.get('borderSize', 0)
-                if border_size > 0:
-                    border_color = child.get('borderColor', 'black')
-                    elem_img = draw_border(elem_img, border_size, border_color)
-
-            elif elem_type == 'text':
-                text = child.get('text', '')
-                if not text:
-                    continue
-                font_size = int(round(float(child.get('fontSize', 24))))
-                try:
-                    # Try common font names
-                    font = ImageFont.truetype("arial.ttf", font_size)
-                except:
-                    try:
-                        font = ImageFont.truetype("DejaVuSans.ttf", font_size)
-                    except:
-                        font = ImageFont.load_default()
-                align = child.get('align', 'left')
-                v_align = child.get('verticalAlign', 'top')
-                line_height = child.get('lineHeight', 1.2)
-                stroke_width = child.get('strokeWidth', 0)
-                stroke_color = child.get('stroke', 'black')
-                fill_color = child.get('fill', 'black')
-
-                lines = text.split('\n')
-                # Calculate line dimensions
-                line_heights = []
-                line_widths = []
-                total_height = 0
-                for line in lines:
-                    bbox = font.getbbox(line)
-                    lw = bbox[2] - bbox[0]
-                    lh = int(font_size * line_height)  # approximate line height
-                    line_heights.append(lh)
-                    line_widths.append(lw)
-                    total_height += lh
-
-                # Vertical alignment
-                if v_align == 'top':
-                    y_offset = 0
-                elif v_align == 'middle':
-                    y_offset = (elem_h - total_height) // 2
-                else:  # bottom
-                    y_offset = elem_h - total_height
-
-                for i, line in enumerate(lines):
-                    if align == 'left':
-                        x_offset = 0
-                    elif align == 'center':
-                        x_offset = (elem_w - line_widths[i]) // 2
-                    else:  # right
-                        x_offset = elem_w - line_widths[i]
-
-                    if stroke_width > 0:
-                        draw.text((x_offset, y_offset), line, font=font,
-                                  fill=parse_color(stroke_color),
-                                  stroke_width=stroke_width,
-                                  stroke_fill=parse_color(stroke_color))
-                    draw.text((x_offset, y_offset), line, font=font,
-                              fill=parse_color(fill_color))
-                    y_offset += line_heights[i]
-
-            elif elem_type == 'figure':
-                sub_type = child.get('subType', 'rect')
-                fill = child.get('fill', 'black')
-                stroke = child.get('stroke', 'black')
-                stroke_width = child.get('strokeWidth', 0)
-                if sub_type in ('rect', 'ellipse'):
-                    coords = (0, 0, elem_w, elem_h)
-                    if sub_type == 'rect':
-                        draw.rectangle(coords, fill=parse_color(fill),
-                                       outline=parse_color(stroke) if stroke_width>0 else None,
-                                       width=stroke_width)
-                    else:
-                        draw.ellipse(coords, fill=parse_color(fill),
-                                     outline=parse_color(stroke) if stroke_width>0 else None,
-                                     width=stroke_width)
-                else:
-                    continue
-            else:
-                # Unsupported type – skip
-                continue
-
-            # Apply opacity
-            if opacity < 1.0:
-                elem_img = apply_opacity(elem_img, opacity)
-
-            # Apply rotation
-            if rotation != 0:
-                elem_img = rotate_element(elem_img, rotation)
-
-            # Paste onto canvas
-            canvas.paste(elem_img, (x, y), elem_img)
-
-        except Exception as e:
-            logger.warning(f"Error rendering element {child.get('id', 'unknown')}: {e}")
-            continue
-
-    return canvas
-
-# ---------- Streamlit App ----------
-st.set_page_config(layout="centered")
-st.title("Polotno JSON Renderer")
-st.write("Upload a Polotno JSON file to render the first page as an image.")
-
-uploaded_file = st.file_uploader("Choose a JSON file", type="json")
-
-if uploaded_file is not None:
-    try:
-        data = json.load(uploaded_file)
+        data = response.json()
+        
+        if data.get('items') and len(data['items']) > 0:
+            item = data['items'][0]
+            content = json.loads(item['content_html'])
+            
+            product_data = {
+                'name': content.get('name', ''),
+                'price': f"KSh {content.get('price', '')}" if content.get('price') else '',
+            }
+            
+            for key, value in content.items():
+                if key not in product_data:
+                    product_data[key] = value
+            
+            images = content.get('images', [])
+            product_data['images'] = images
+            
+            for i, img_url in enumerate(images, 1):
+                product_data[f'image{i}'] = img_url
+            
+            if 'ram' in content:
+                product_data['spec1'] = content['ram']
+            if 'rom' in content or 'storage' in content:
+                product_data['spec2'] = content.get('rom') or content.get('storage', '')
+                
+            return product_data
+        return None
     except Exception as e:
-        st.error(f"Invalid JSON file: {e}")
-        st.stop()
+        return None
 
-    # Get root canvas dimensions (fallback if page dimensions are "auto")
+@st.cache_data(ttl=3600)
+def load_image_from_url(url):
+    """Cache loaded images."""
+    if not url:
+        return None
+    
     try:
-        root_width = int(round(float(data.get('width', 1080))))
-        root_height = int(round(float(data.get('height', 1080))))
-    except (ValueError, TypeError) as e:
-        st.error(f"Invalid root width/height: {e}")
-        st.stop()
+        clean_url = unquote(url.replace('&amp;', '&').strip())
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(clean_url, timeout=15, headers=headers)
+        response.raise_for_status()
+        
+        img = Image.open(io.BytesIO(response.content))
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+        return img
+    except:
+        return None
 
-    pages = data.get('pages', [])
-    if not pages:
-        st.error("No pages found in the JSON.")
-        st.stop()
+def hex_to_rgba(color_str):
+    """Convert color formats to RGBA."""
+    if not color_str:
+        return (0, 0, 0, 255)
+    
+    try:
+        if color_str.startswith('rgba'):
+            match = re.match(r'rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)', color_str)
+            if match:
+                r, g, b = int(match.group(1)), int(match.group(2)), int(match.group(3))
+                a = int(float(match.group(4)) * 255)
+                return (r, g, b, a)
+        
+        if color_str.startswith('rgb'):
+            match = re.match(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', color_str)
+            if match:
+                return tuple(int(match.group(i)) for i in range(1, 4)) + (255,)
+        
+        color_str = color_str.lstrip('#')
+        if len(color_str) == 6:
+            return tuple(int(color_str[i:i+2], 16) for i in (0, 2, 4)) + (255,)
+        elif len(color_str) == 8:
+            return tuple(int(color_str[i:i+2], 16) for i in (0, 2, 4, 6))
+    except:
+        pass
+    return (0, 0, 0, 255)
 
-    first_page = pages[0]
-    with st.spinner("Rendering page..."):
+@lru_cache(maxsize=32)
+def get_font(size, font_family):
+    """Cache fonts."""
+    try:
+        font_paths = [
+            f"/usr/share/fonts/truetype/{font_family.replace(' ', '')}/{font_family.replace(' ', '')}-Regular.ttf",
+            f"/usr/share/fonts/truetype/{font_family.lower().replace(' ', '')}/{font_family.lower().replace(' ', '')}-regular.ttf",
+            f"/System/Library/Fonts/{font_family.replace(' ', '')}.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/Windows/Fonts/arial.ttf",
+        ]
+        
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    return ImageFont.truetype(font_path, int(size))
+                except:
+                    continue
+        
         try:
-            img = render_page(first_page, root_width, root_height)
-        except Exception as e:
-            st.error(f"Rendering failed: {e}")
-            st.stop()
+            return ImageFont.truetype(font_family, int(size))
+        except:
+            pass
+            
+        return ImageFont.load_default()
+    except:
+        return ImageFont.load_default()
 
-    st.image(img, caption="Rendered Page 1", use_container_width=True)
+def decode_base64_image(base64_string):
+    """Decode base64 image."""
+    try:
+        if ',' in base64_string:
+            base64_string = base64_string.split(',')[1]
+        image_data = base64.b64decode(base64_string)
+        img = Image.open(io.BytesIO(image_data))
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+        return img
+    except:
+        return None
 
-    # Option to download
-    buf = BytesIO()
-    img.convert('RGB').save(buf, format='PNG')
-    st.download_button("Download as PNG", buf.getvalue(), file_name="page1.png", mime="image/png")
+def extract_variables(text):
+    """Extract {{variable}} patterns."""
+    if not text:
+        return []
+    return re.findall(r'\{\{(\w+)\}\}', text)
+
+def substitute_variables(text, data):
+    """Replace variables with data."""
+    if not text or not data:
+        return text
+    
+    result = text
+    for var in extract_variables(text):
+        value = data.get(var, '')
+        result = result.replace(f'{{{var}}}', str(value))
+    
+    return result
+
+def is_image_variable(var_name):
+    """Check if variable is an image variable."""
+    return var_name.startswith('image') and var_name[5:].isdigit()
+
+def render_svg_element(draw, element):
+    """Render SVG rectangle."""
+    x = element.get('x', 0)
+    y = element.get('y', 0)
+    width = element.get('width', 100)
+    height = element.get('height', 100)
+    
+    colors_replace = element.get('colorsReplace', {})
+    fill_color = (0, 161, 255, 255)
+    
+    if colors_replace:
+        for old_color, new_color in colors_replace.items():
+            fill_color = hex_to_rgba(new_color)
+    
+    draw.rectangle([x, y, x + width, y + height], fill=fill_color[:3])
+
+def render_element_to_array(element, data, canvas_width, canvas_height, is_text_editable=False):
+    """Render element to numpy array for video frames."""
+    x = int(element.get('x', 0))
+    y = int(element.get('y', 0))
+    w = int(element.get('width', 100))
+    h = int(element.get('height', 100))
+    
+    # Create transparent RGBA image
+    img = Image.new('RGBA', (canvas_width, canvas_height), (0, 0, 0, 0))
+    
+    elem_type = element.get('type')
+    
+    if elem_type == 'svg':
+        draw = ImageDraw.Draw(img)
+        render_svg_element(draw, element)
+    
+    elif elem_type == 'image':
+        name = element.get('name', '')
+        src = element.get('src', '')
+        
+        img_to_render = None
+        
+        if name and '{{' in name:
+            var_name = name.replace('{{', '').replace('}}', '')
+            img_url = data.get(var_name)
+            if img_url:
+                img_to_render = load_image_from_url(img_url)
+        else:
+            if src.startswith('http'):
+                img_to_render = load_image_from_url(src)
+            elif src.startswith('data:image'):
+                img_to_render = decode_base64_image(src)
+        
+        if img_to_render:
+            img_to_render = img_to_render.resize((w, h), Image.Resampling.LANCZOS)
+            img.paste(img_to_render, (x, y), img_to_render)
+    
+    elif elem_type == 'text':
+        draw = ImageDraw.Draw(img)
+        text = element.get('text', '')
+        name = element.get('name', '')
+        
+        # Use name if it's a template, otherwise use text
+        template_text = name if name and '{{' in name else text
+        
+        # If editable and has variables, use edited value
+        if is_text_editable and name and '{{' in name:
+            var_name = name.replace('{{', '').replace('}}', '')
+            if not is_image_variable(var_name):
+                final_text = data.get(var_name, substitute_variables(template_text, data))
+            else:
+                final_text = substitute_variables(template_text, data)
+        else:
+            final_text = substitute_variables(template_text, data)
+        
+        if not final_text or final_text.strip() == '':
+            return None
+        
+        font_size = element.get('fontSize', 20)
+        font_family = element.get('fontFamily', 'Roboto')
+        fill = hex_to_rgba(element.get('fill', 'rgba(0,0,0,1)'))
+        align = element.get('align', 'left')
+        
+        font = get_font(int(font_size), font_family)
+        
+        try:
+            bbox = draw.textbbox((0, 0), final_text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except:
+            text_width, text_height = draw.textsize(final_text, font=font)
+        
+        if align == 'center':
+            text_x = x + (w - text_width) / 2
+        elif align == 'right':
+            text_x = x + w - text_width
+        else:
+            text_x = x
+        
+        text_y = y + (h - text_height) / 2
+        
+        draw.text((text_x, text_y), final_text, fill=fill[:3], font=font)
+    
+    return np.array(img)
+
+def parse_animations(element):
+    """Parse enabled animations."""
+    animations = element.get('animations', [])
+    enabled = []
+    for anim in animations:
+        if anim.get('enabled', False):
+            enabled.append({
+                'type': anim.get('type'),
+                'name': anim.get('name'),
+                'delay': anim.get('delay', 0) / 1000,
+                'duration': anim.get('duration', 500) / 1000,
+            })
+    return enabled
+
+def apply_animation_effect(elem_array, element, anim, progress, canvas_width, canvas_height):
+    """Apply animation effect to element array."""
+    anim_name = anim['name']
+    anim_type = anim['type']
+    
+    x = int(element.get('x', 0))
+    y = int(element.get('y', 0))
+    w = int(element.get('width', 100))
+    h = int(element.get('height', 100))
+    
+    # Extract region
+    region = elem_array[y:y+h, x:x+w].copy()
+    
+    if region.size == 0:
+        return elem_array
+    
+    if anim_name == 'fade':
+        if anim_type == 'enter':
+            alpha = progress
+        elif anim_type == 'exit':
+            alpha = 1 - progress
+        else:
+            alpha = 0.5 + 0.5 * np.sin(progress * 2 * np.pi)
+        
+        # Apply alpha to region
+        elem_array[y:y+h, x:x+w] = (region * alpha).astype(np.uint8)
+    
+    elif anim_name == 'zoom':
+        if anim_type == 'enter':
+            scale = 0.5 + 0.5 * progress
+        elif anim_type == 'exit':
+            scale = 1.0 - 0.5 * progress
+        else:
+            scale = 1.0 + 0.1 * np.sin(progress * 2 * np.pi)
+        
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        
+        # Resize region
+        from PIL import Image as PILImage
+        pil_region = PILImage.fromarray(region)
+        pil_region = pil_region.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
+        resized = np.array(pil_region)
+        
+        # Center crop/paste
+        y_offset = (new_h - h) // 2
+        x_offset = (new_w - w) // 2
+        
+        # Clear original region
+        elem_array[y:y+h, x:x+w] = 0
+        
+        # Calculate paste bounds
+        src_y1 = max(0, y_offset)
+        src_y2 = min(h + y_offset, new_h)
+        src_x1 = max(0, x_offset)
+        src_x2 = min(w + x_offset, new_w)
+        dst_y1 = max(0, -y_offset)
+        dst_y2 = min(h, new_h - y_offset)
+        dst_x1 = max(0, -x_offset)
+        dst_x2 = min(w, new_w - x_offset)
+        
+        if dst_y2 > dst_y1 and dst_x2 > dst_x1:
+            elem_array[y+dst_y1:y+dst_y2, x+dst_x1:x+dst_x2] = resized[src_y1:src_y2, src_x1:src_x2]
+    
+    elif anim_name == 'blink':
+        alpha = 0.5 + 0.5 * np.sin(progress * 2 * np.pi)
+        elem_array[y:y+h, x:x+w] = (region * alpha).astype(np.uint8)
+    
+    return elem_array
+
+def render_video_optimized(template_data, edited_data, fps=30, progress_bar=None):
+    """Optimized video rendering with pre-caching."""
+    width = int(template_data.get('width', 1080))
+    height = int(template_data.get('height', 1080))
+    
+    pages = template_data.get('pages', [])
+    if not pages:
+        return None
+    
+    page = pages[0]
+    total_duration = page.get('duration', 5000) / 1000
+    bg_color = hex_to_rgba(page.get('background', 'rgba(255,255,255,1)'))
+    
+    children = page.get('children', [])
+    total_frames = int(total_duration * fps)
+    
+    # Pre-render all static elements to single array
+    static_elements = []
+    animated_elements = []
+    
+    for child in children:
+        anims = parse_animations(child)
+        if anims:
+            animated_elements.append((child, anims))
+        else:
+            static_elements.append(child)
+    
+    # Pre-render static layer once
+    static_layer = np.zeros((height, width, 4), dtype=np.uint8)
+    static_layer[:, :] = bg_color
+    
+    for elem in static_elements:
+        elem_array = render_element_to_array(elem, edited_data, width, height, is_text_editable=True)
+        if elem_array is not None:
+            # Alpha composite
+            alpha = elem_array[:, :, 3:4] / 255.0
+            static_layer = (elem_array * alpha + static_layer * (1 - alpha)).astype(np.uint8)
+    
+    # Pre-render animated elements (full opacity)
+    animated_layers = []
+    for elem, anims in animated_elements:
+        elem_array = render_element_to_array(elem, edited_data, width, height, is_text_editable=True)
+        animated_layers.append((elem, anims, elem_array))
+    
+    # Generate frames
+    frames = []
+    for frame_idx in range(total_frames):
+        time = frame_idx / fps
+        
+        # Start with static layer
+        frame = static_layer.copy()
+        
+        # Apply animated elements
+        for elem, anims, elem_array in animated_layers:
+            if elem_array is None:
+                continue
+                
+            x = int(elem.get('x', 0))
+            y = int(elem.get('y', 0))
+            w = int(elem.get('width', 100))
+            h = int(elem.get('height', 100))
+            
+            # Find active animation
+            applied = False
+            for anim in anims:
+                delay = anim['delay']
+                duration = anim['duration']
+                anim_type = anim['type']
+                
+                if anim_type in ['enter', 'exit']:
+                    if time >= delay and time <= delay + duration:
+                        progress = (time - delay) / duration
+                        elem_copy = elem_array.copy()
+                        elem_copy = apply_animation_effect(elem_copy, elem, anim, progress, width, height)
+                        # Composite
+                        alpha = elem_copy[:, :, 3:4] / 255.0
+                        frame = (elem_copy * alpha + frame * (1 - alpha)).astype(np.uint8)
+                        applied = True
+                        break
+                    elif time > delay + duration and anim_type == 'enter':
+                        # After enter, show full
+                        alpha = elem_array[:, :, 3:4] / 255.0
+                        frame = (elem_array * alpha + frame * (1 - alpha)).astype(np.uint8)
+                        applied = True
+                        break
+                    elif time < delay and anim_type == 'exit':
+                        alpha = elem_array[:, :, 3:4] / 255.0
+                        frame = (elem_array * alpha + frame * (1 - alpha)).astype(np.uint8)
+                        applied = True
+                        break
+                else:  # loop
+                    loop_time = (time - delay) % duration if time >= delay else 0
+                    progress = loop_time / duration
+                    elem_copy = elem_array.copy()
+                    elem_copy = apply_animation_effect(elem_copy, elem, anim, progress, width, height)
+                    alpha = elem_copy[:, :, 3:4] / 255.0
+                    frame = (elem_copy * alpha + frame * (1 - alpha)).astype(np.uint8)
+                    applied = True
+                    break
+            
+            if not applied:
+                # No animation applied, show full
+                alpha = elem_array[:, :, 3:4] / 255.0
+                frame = (elem_array * alpha + frame * (1 - alpha)).astype(np.uint8)
+        
+        # Convert to RGB
+        frames.append(frame[:, :, :3])
+        
+        if progress_bar and frame_idx % 10 == 0:
+            progress_bar.progress(min(1.0, frame_idx / total_frames))
+    
+    if progress_bar:
+        progress_bar.progress(1.0)
+    
+    # Create video clip
+    def make_frame(t):
+        idx = min(int(t * fps), len(frames) - 1)
+        return frames[idx]
+    
+    try:
+        clip = VideoClip(make_frame, duration=total_duration)
+        clip = clip.with_fps(fps)
+    except:
+        clip = VideoClip(make_frame, duration=total_duration)
+        clip.fps = fps
+    
+    return clip
+
+def analyze_template(template_data):
+    """Analyze template for variables and animations."""
+    variables = {}
+    animated_count = 0
+    
+    pages = template_data.get('pages', [])
+    duration = pages[0].get('duration', 5000) / 1000 if pages else 5
+    
+    for page in pages:
+        for child in page.get('children', []):
+            name = child.get('name', '')
+            text = child.get('text', '')
+            
+            # Check for variables in name
+            if name and '{{' in name:
+                var = name.replace('{{', '').replace('}}', '')
+                elem_type = child.get('type')
+                variables[var] = {'type': elem_type, 'is_image': is_image_variable(var)}
+            
+            # Check for animations
+            if child.get('animations'):
+                if any(a.get('enabled') for a in child.get('animations', [])):
+                    animated_count += 1
+    
+    return variables, animated_count, duration
+
+def main():
+    st.title("🎬 Polotno Template Renderer")
+    
+    # Sidebar for controls
+    with st.sidebar:
+        st.header("⚙️ Controls")
+        
+        # Template input
+        st.subheader("Template")
+        template_file = st.file_uploader("Upload JSON", type=['json'])
+        template_json_str = st.text_area("Or paste JSON", height=150)
+        
+        # Data feed
+        st.subheader("Data Feed")
+        feed_url = st.text_input(
+            "Feed URL",
+            value="https://myrhub.vercel.app/kenyatronics/view/xiaomi-redmi-note-15-pro-5g-8gb-ram-256gb-rom-683-inch-amoled-display-200mp-camera?format=json"
+        )
+        
+        load_data = st.button("📥 Load Data", use_container_width=True)
+        
+        # Output settings
+        st.subheader("Output")
+        output_type = st.radio("Type", ["Image (PNG)", "Video (MP4)"], index=1)
+        
+        if output_type == "Video (MP4)":
+            fps = st.slider("FPS", 15, 60, 30)
+            quality = st.select_slider("Quality", options=["Fast", "Balanced", "High"], value="Balanced")
+        
+        debug = st.checkbox("Debug Mode", value=False)
+        
+        generate = st.button("🚀 Generate", type="primary", use_container_width=True)
+    
+    # Main content area
+    col1, col2 = st.columns([1, 1.5])
+    
+    with col1:
+        st.subheader("📝 Edit Content")
+        
+        # Parse template
+        template_data = None
+        if template_file:
+            try:
+                template_data = json.load(template_file)
+            except:
+                st.error("Invalid JSON file")
+        elif template_json_str:
+            try:
+                template_data = json.loads(template_json_str)
+            except:
+                st.error("Invalid JSON")
+        
+        if template_data:
+            width = template_data.get('width', 1080)
+            height = template_data.get('height', 1080)
+            st.caption(f"Canvas: {width}×{height}")
+            
+            # Analyze template
+            template_vars, anim_count, duration = analyze_template(template_data)
+            
+            if anim_count > 0:
+                st.info(f"🎞️ {anim_count} animated elements • {duration:.1f}s")
+            
+            # Fetch product data
+            if 'product_data' not in st.session_state or load_data:
+                with st.spinner("Loading..."):
+                    st.session_state.product_data = fetch_product_data(feed_url)
+            
+            product_data = st.session_state.get('product_data', {})
+            
+            # Build editable fields
+            edited_data = product_data.copy() if product_data else {}
+            
+            if template_vars:
+                st.write("**Editable Fields:**")
+                
+                for var, info in template_vars.items():
+                    if info['is_image']:
+                        # Display image preview
+                        img_url = edited_data.get(var)
+                        if img_url:
+                            st.image(img_url, width=100, caption=f"{{{var}}}")
+                        else:
+                            st.caption(f"{{{var}}}: No image")
+                    else:
+                        # Editable text field
+                        current_val = edited_data.get(var, '')
+                        new_val = st.text_input(
+                            f"{{{var}}}",
+                            value=str(current_val),
+                            key=f"edit_{var}"
+                        )
+                        edited_data[var] = new_val
+            else:
+                st.info("No template variables found")
+        else:
+            st.info("Upload a template to start")
+    
+    with col2:
+        st.subheader("🖼️ Preview")
+        
+        if template_data and generate:
+            if output_type == "Image (PNG)":
+                with st.spinner("Rendering..."):
+                    # Render single frame
+                    from PIL import Image as PILImage
+                    img = PILImage.new('RGBA', (width, height), (255, 255, 255, 255))
+                    
+                    children = template_data.get('pages', [{}])[0].get('children', [])
+                    for child in children:
+                        arr = render_element_to_array(child, edited_data, width, height, is_text_editable=True)
+                        if arr is not None:
+                            pil_elem = PILImage.fromarray(arr)
+                            img.paste(pil_elem, (0, 0), pil_elem)
+                    
+                    result = img.convert('RGB')
+                    st.image(result, use_container_width=True)
+                    
+                    buf = io.BytesIO()
+                    result.save(buf, format='PNG')
+                    st.download_button("⬇️ Download PNG", buf.getvalue(),
+                                     file_name="output.png", mime="image/png")
+            
+            else:  # Video
+                progress_bar = st.progress(0)
+                status = st.empty()
+                
+                with st.spinner("Rendering video..."):
+                    status.text("Generating frames...")
+                    clip = render_video_optimized(template_data, edited_data, fps, progress_bar)
+                    
+                    if clip:
+                        status.text("Encoding video...")
+                        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+                            tmp_path = tmp.name
+                        
+                        # Quality settings
+                        preset = 'ultrafast' if quality == "Fast" else 'medium' if quality == "Balanced" else 'slow'
+                        
+                        try:
+                            clip.write_videofile(tmp_path, codec='libx264', audio=False, 
+                                               logger=None, preset=preset, threads=4)
+                        except:
+                            clip.write_videofile(tmp_path, codec='libx264', audio=False, verbose=False)
+                        
+                        with open(tmp_path, 'rb') as f:
+                            video_bytes = f.read()
+                        
+                        status.empty()
+                        st.video(video_bytes)
+                        st.download_button("⬇️ Download MP4", video_bytes,
+                                         file_name="output.mp4", mime="video/mp4")
+                        os.unlink(tmp_path)
+
+if __name__ == "__main__":
+    main()
