@@ -104,10 +104,8 @@ def render_text_overlay(draw, element, data):
     text = element.get('text', '')
     name = element.get('name', '')
     
-    # Get template text from name or text field
     template = name if name and '{{' in name else text
     
-    # Replace variables
     for var in extract_variables(template):
         value = data.get(var, '')
         template = template.replace(f'{{{var}}}', str(value))
@@ -127,7 +125,6 @@ def render_text_overlay(draw, element, data):
     
     font = get_font(int(font_size), font_family)
     
-    # Calculate position
     try:
         bbox = draw.textbbox((0, 0), template, font=font)
         text_width = bbox[2] - bbox[0]
@@ -144,14 +141,11 @@ def render_text_overlay(draw, element, data):
     
     text_y = y + (h - text_height) / 2
     
-    # Draw with optional shadow/outline for readability
     shadow = element.get('shadowEnabled', False)
     if shadow:
         shadow_color = element.get('shadowColor', 'black')
-        shadow_blur = element.get('shadowBlur', 5)
         shadow_x = element.get('shadowOffsetX', 0)
         shadow_y = element.get('shadowOffsetY', 0)
-        # Simple shadow
         draw.text((text_x + shadow_x, text_y + shadow_y), template, 
                  fill=shadow_color, font=font)
     
@@ -161,9 +155,8 @@ def render_image_overlay(base_img, element, data):
     """Render image element onto base image."""
     name = element.get('name', '')
     
-    # Check if it's a template variable
     if not (name and '{{' in name):
-        return  # Skip non-variable images (base template handles it)
+        return
     
     var_name = name.replace('{{', '').replace('}}', '')
     img_url = data.get(var_name)
@@ -176,23 +169,19 @@ def render_image_overlay(base_img, element, data):
     w = int(element.get('width', 100))
     h = int(element.get('height', 100))
     
-    # Load and resize image
     img_to_render = load_image_from_url(img_url)
     if not img_to_render:
         return
     
     img_to_render = img_to_render.resize((w, h), Image.Resampling.LANCZOS)
     
-    # Handle rounded corners if specified
     corner_radius = element.get('cornerRadius', 0)
     if corner_radius > 0:
-        # Create mask for rounded corners
         mask = Image.new('L', (w, h), 0)
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.rounded_rectangle([0, 0, w, h], radius=corner_radius, fill=255)
         img_to_render.putalpha(mask)
     
-    # Paste onto base
     if img_to_render.mode == 'RGBA':
         base_img.paste(img_to_render, (x, y), img_to_render)
     else:
@@ -212,7 +201,6 @@ def render_svg_overlay(draw, element):
         for old_color, new_color in colors_replace.items():
             fill_color = hex_to_rgba(new_color)
     
-    # Handle opacity
     opacity = element.get('opacity', 1)
     if opacity < 1:
         fill_color = (*fill_color[:3], int(fill_color[3] * opacity))
@@ -221,7 +209,6 @@ def render_svg_overlay(draw, element):
 
 def render_poster(base_image, template_data, data):
     """Render final poster by overlaying variables on base image."""
-    # Convert base to RGBA for compositing
     if base_image.mode != 'RGBA':
         result = base_image.convert('RGBA')
     else:
@@ -234,22 +221,18 @@ def render_poster(base_image, template_data, data):
     page = pages[0]
     children = page.get('children', [])
     
-    # Sort: SVGs first, then images, then text (text on top)
     elements = sorted(children, key=lambda e: {
         'svg': 0, 'image': 1, 'text': 2
     }.get(e.get('type'), 3))
     
-    # Render each element
     for element in elements:
         elem_type = element.get('type')
         
         if elem_type == 'svg':
             draw = ImageDraw.Draw(result)
             render_svg_overlay(draw, element)
-        
         elif elem_type == 'image':
             render_image_overlay(result, element, data)
-        
         elif elem_type == 'text':
             draw = ImageDraw.Draw(result)
             render_text_overlay(draw, element, data)
@@ -282,19 +265,32 @@ def main():
     with st.sidebar:
         st.header("📁 Upload Files")
         
-        # Base image template
         base_image_file = st.file_uploader(
             "1. Base Image Template", 
             type=['png', 'jpg', 'jpeg'],
-            help="This is your background image. All variables will be overlaid on this."
+            help="Background image. Variables will be overlaid on this."
         )
         
-        # Polotno JSON
-        template_file = st.file_uploader(
-            "2. Polotno JSON", 
-            type=['json'],
-            help="Contains layout positions and variable placeholders like {{name}}, {{price}}, {{image1}}"
-        )
+        st.divider()
+        st.subheader("2. Polotno JSON")
+        
+        json_input_method = st.radio("Input method:", ["Upload File", "Paste JSON"], key="json_method")
+        
+        template_file = None
+        template_json_str = ""
+        
+        if json_input_method == "Upload File":
+            template_file = st.file_uploader(
+                "Upload JSON file", 
+                type=['json'],
+                help="Contains layout positions and variable placeholders"
+            )
+        else:
+            template_json_str = st.text_area(
+                "Paste JSON here",
+                height=200,
+                placeholder='{"width": 1080, "height": 1080, "pages": [...]}'
+            )
         
         st.divider()
         
@@ -326,7 +322,6 @@ def main():
                                 'spec2': content.get('rom', ''),
                             }
                             
-                            # Add images
                             for i, img in enumerate(content.get('images', []), 1):
                                 new_data[f'image{i}'] = img
                             
@@ -339,35 +334,38 @@ def main():
         
         generate_btn = st.button("🚀 Generate Poster", type="primary", use_container_width=True)
     
-    # Main content area
     col1, col2 = st.columns([1, 1.5])
     
     with col1:
         st.subheader("📝 Edit Variables")
         
-        # Parse template
         template_data = None
-        if template_file:
+        
+        if json_input_method == "Upload File" and template_file:
             try:
                 template_data = json.load(template_file)
-                st.caption(f"Template: {template_data.get('width', 0)}×{template_data.get('height', 0)}")
+            except Exception as e:
+                st.error(f"Invalid JSON file: {e}")
+        elif json_input_method == "Paste JSON" and template_json_str:
+            try:
+                template_data = json.loads(template_json_str)
             except Exception as e:
                 st.error(f"Invalid JSON: {e}")
         
-        # Show base image preview
+        if template_data:
+            st.caption(f"Template: {template_data.get('width', 0)}×{template_data.get('height', 0)}")
+        
         base_image = None
         if base_image_file:
             base_image = Image.open(base_image_file)
             st.image(base_image, caption="Base Template", width=300)
         
-        # Variable editing
         if template_data:
             variables = parse_template_variables(template_data)
             
             if variables:
                 st.write("**Detected Variables:**")
                 
-                # Initialize data in session state if not exists
                 if 'data' not in st.session_state:
                     st.session_state.data = {}
                 
@@ -395,7 +393,7 @@ def main():
             else:
                 st.info("No template variables ({{name}}, etc.) found in JSON")
         else:
-            st.info("Upload Polotno JSON to see variables")
+            st.info("Upload or paste Polotno JSON to see variables")
     
     with col2:
         st.subheader("🖼️ Preview")
@@ -409,7 +407,6 @@ def main():
                 if result:
                     st.image(result, use_container_width=True)
                     
-                    # Download buttons
                     col_dl1, col_dl2 = st.columns(2)
                     
                     with col_dl1:
@@ -437,7 +434,7 @@ def main():
         elif not base_image:
             st.info("Upload a base image template to start")
         elif not template_data:
-            st.info("Upload a Polotno JSON with variable placeholders")
+            st.info("Upload or paste a Polotno JSON with variable placeholders")
 
 if __name__ == "__main__":
     main()
