@@ -1,7 +1,7 @@
 import streamlit as st
 import json
 import requests
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 import io
 import re
 from urllib.parse import unquote, quote
@@ -26,14 +26,100 @@ WOO_STORES = {
 
 WSRV_BASE = "https://wsrv.nl/?url={url}&trim=10&output=png&bg=transparent"
 
+# ============== FONT HANDLING ==============
+
+def get_font(size: int, font_family: str = "Arial"):
+    """
+    Load font with fallback chain:
+    1. Requested font from system
+    2. Poppins.ttf from local folder
+    3. DejaVu Sans
+    4. Arial
+    5. Default
+    """
+    # Clean font name
+    font_family = font_family.replace('"', '').replace("'", "").strip()
+    
+    # Try exact font first
+    try:
+        return ImageFont.truetype(font_family, int(size))
+    except:
+        pass
+    
+    # Try local Poppins
+    local_fonts = [
+        "Poppins.ttf",
+        "Poppins-Regular.ttf",
+        "poppins.ttf",
+        "./Poppins.ttf",
+        "./poppins.ttf"
+    ]
+    for font_file in local_fonts:
+        if os.path.exists(font_file):
+            try:
+                return ImageFont.truetype(font_file, int(size))
+            except:
+                pass
+    
+    # Try system fonts with mapped names
+    font_map = {
+        'poppins': ['Poppins-Regular.ttf', 'Poppins.ttf'],
+        'roboto': ['Roboto-Regular.ttf', 'DejaVuSans.ttf'],
+        'arial': ['Arial.ttf', 'DejaVuSans.ttf'],
+        'dejavu': ['DejaVuSans.ttf'],
+        'six caps': ['DejaVuSansCondensed-Bold.ttf'],
+        'alata': ['DejaVuSans-Bold.ttf'],
+        'bebas neue': ['DejaVuSansCondensed-Bold.ttf'],
+        'montserrat': ['DejaVuSans.ttf'],
+        'inter': ['DejaVuSans.ttf'],
+        'open sans': ['DejaVuSans.ttf'],
+    }
+    
+    # Check mapped names
+    font_lower = font_family.lower()
+    if font_lower in font_map:
+        for fallback in font_map[font_lower]:
+            try:
+                paths = [
+                    f"/usr/share/fonts/truetype/dejavu/{fallback}",
+                    f"/usr/share/fonts/truetype/{fallback}",
+                    f"/System/Library/Fonts/{fallback}",
+                    f"/Windows/Fonts/{fallback}",
+                    fallback
+                ]
+                for path in paths:
+                    if os.path.exists(path):
+                        return ImageFont.truetype(path, int(size))
+            except:
+                continue
+    
+    # Try common system paths
+    system_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    ]
+    
+    for path in system_paths:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, int(size))
+            except:
+                continue
+    
+    # Fallback to default
+    return ImageFont.load_default()
+
 # ============== DATA CLASSES ==============
 
 @dataclass
 class Animation:
-    type: str  # enter, exit, loop
-    name: str  # fade, zoom, slide, rotate, bounce, blur
-    delay: float  # seconds
-    duration: float  # seconds
+    type: str
+    name: str
+    delay: float
+    duration: float
     easing: str = "linear"
     
     @classmethod
@@ -59,7 +145,6 @@ class Product:
     store: str
     
     def to_template_data(self) -> Dict:
-        """Convert to template variable dictionary."""
         data = {
             'name': self.name,
             'price': self.price,
@@ -68,7 +153,6 @@ class Product:
             'currency': self.currency,
         }
         
-        # Add numbered specs
         spec_map = {
             'RAM': 'ram',
             'ROM': 'rom', 
@@ -87,7 +171,6 @@ class Product:
                 data[f'spec{spec_idx}'] = self.attributes[attr_key]
                 spec_idx += 1
         
-        # Add wsrv-optimized images
         for i, img_url in enumerate(self.images[:6], 1):
             data[f'image{i}'] = WSRV_BASE.format(url=quote(img_url, safe=''))
             data[f'raw_image{i}'] = img_url
@@ -106,7 +189,6 @@ class WooCommerceAPI:
         }
     
     def search(self, keyword: str, limit: int = 3) -> List[Product]:
-        """Search products and return list."""
         params = {'search': keyword, 'per_page': limit}
         
         try:
@@ -124,7 +206,6 @@ class WooCommerceAPI:
                 raw_price = item['prices']['price']
                 currency = item['prices']['currency_code']
                 
-                # Extract attributes
                 attrs = {}
                 for attr in item.get('attributes', []):
                     name = attr.get('name', '').upper()
@@ -152,34 +233,11 @@ class WooCommerceAPI:
 
 # ============== IMAGE PROCESSING ==============
 
-@lru_cache(maxsize=50)
-def get_font(size: int, font_family: str):
-    """Cached font loader."""
-    try:
-        # Try system fonts
-        font_map = {
-            'Six Caps': '/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf',
-            'Alata': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-            'Roboto': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-            'Bebas Neue': '/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf',
-            'Montserrat': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        }
-        
-        if font_family in font_map and os.path.exists(font_map[font_family]):
-            return ImageFont.truetype(font_map[font_family], size)
-        
-        # Try generic
-        return ImageFont.truetype(font_family, size)
-    except:
-        return ImageFont.load_default()
-
 def load_image_optimized(url: str, width: int = None, height: int = None) -> Optional[Image.Image]:
-    """Load image with wsrv optimization."""
     if not url:
         return None
     
     try:
-        # Use wsrv for optimization
         if not url.startswith('https://wsrv.nl'):
             url = WSRV_BASE.format(url=quote(url, safe=''))
         
@@ -192,17 +250,16 @@ def load_image_optimized(url: str, width: int = None, height: int = None) -> Opt
         if img.mode != 'RGBA':
             img = img.convert('RGBA')
         
-        # Resize if dimensions provided
         if width and height:
             img = img.resize((width, height), Image.Resampling.LANCZOS)
         
         return img
         
     except Exception as e:
+        st.warning(f"Failed to load image: {str(e)[:50]}")
         return None
 
 def hex_to_rgba(color_str: str) -> Tuple[int, int, int, int]:
-    """Convert color string to RGBA tuple."""
     if not color_str:
         return (0, 0, 0, 255)
     
@@ -222,7 +279,6 @@ def hex_to_rgba(color_str: str) -> Tuple[int, int, int, int]:
             if match:
                 return tuple(int(match.group(i)) for i in range(1, 4)) + (255,)
         
-        # Hex
         color_str = color_str.lstrip('#')
         if len(color_str) == 6:
             return tuple(int(color_str[i:i+2], 16) for i in (0, 2, 4)) + (255,)
@@ -234,253 +290,270 @@ def hex_to_rgba(color_str: str) -> Tuple[int, int, int, int]:
     
     return (0, 0, 0, 255)
 
-# ============== ANIMATION ENGINE ==============
+def extract_variables(text: str) -> List[str]:
+    if not text:
+        return []
+    return re.findall(r'\{\{(\w+)\}\}', str(text))
 
-class AnimationEngine:
-    """Handle all animation calculations."""
-    
-    @staticmethod
-    def ease_value(t: float, easing: str) -> float:
-        """Apply easing function."""
-        if easing == "ease-in":
-            return t * t
-        elif easing == "ease-out":
-            return 1 - (1 - t) * (1 - t)
-        elif easing == "ease-in-out":
-            return 0.5 - 0.5 * math.cos(t * math.pi)
-        elif easing == "bounce":
-            if t < 0.5:
-                return 2 * t * t
-            else:
-                return 1 - math.pow(-2 * t + 2, 2) / 2
-        return t  # linear
-    
-    @staticmethod
-    def apply_fade(img_array: np.ndarray, progress: float, fade_in: bool = True) -> np.ndarray:
-        """Apply fade effect."""
-        alpha = progress if fade_in else (1 - progress)
-        return (img_array * alpha).astype(np.uint8)
-    
-    @staticmethod
-    def apply_zoom(img_array: np.ndarray, progress: float, zoom_in: bool = True) -> np.ndarray:
-        """Apply zoom effect."""
-        from scipy import ndimage
-        
-        if zoom_in:
-            scale = 0.5 + 0.5 * progress
-        else:
-            scale = 1.5 - 0.5 * progress
-        
-        h, w = img_array.shape[:2]
-        new_h, new_w = int(h * scale), int(w * scale)
-        
-        if new_h < 2 or new_w < 2:
-            return img_array
-        
-        # Zoom
-        zoomed = ndimage.zoom(img_array, (scale, scale, 1), order=1)
-        
-        # Center crop/pad
-        zh, zw = zoomed.shape[:2]
-        y1 = max(0, (zh - h) // 2)
-        x1 = max(0, (zw - w) // 2)
-        y2 = min(zh, y1 + h)
-        x2 = min(zw, x1 + w)
-        
-        result = np.zeros_like(img_array)
-        dy1 = max(0, (h - zh) // 2)
-        dx1 = max(0, (w - zw) // 2)
-        
-        result[dy1:dy1+(y2-y1), dx1:dx1+(x2-x1)] = zoomed[y1:y2, x1:x2]
-        return result
-    
-    @staticmethod
-    def apply_slide(img_array: np.ndarray, progress: float, direction: str = "left") -> np.ndarray:
-        """Apply slide effect."""
-        h, w = img_array.shape[:2]
-        
-        if direction == "left":
-            offset = int(w * (1 - progress))
-        elif direction == "right":
-            offset = int(-w * (1 - progress))
-        elif direction == "up":
-            offset = int(h * (1 - progress))
-            result = np.roll(img_array, offset, axis=0)
-            return result
-        else:  # down
-            offset = int(-h * (1 - progress))
-            result = np.roll(img_array, offset, axis=0)
-            return result
-        
-        result = np.roll(img_array, offset, axis=1)
-        return result
-    
-    @staticmethod
-    def apply_rotate(img_array: np.ndarray, progress: float, clockwise: bool = True) -> np.ndarray:
-        """Apply rotation effect."""
-        from scipy import ndimage
-        
-        angle = progress * 360 if clockwise else -progress * 360
-        rotated = ndimage.rotate(img_array, angle, reshape=False, order=1)
-        return rotated
-    
-    @staticmethod
-    def apply_blur(img_array: np.ndarray, progress: float, blur_in: bool = True) -> np.ndarray:
-        """Apply blur effect."""
-        from scipy import ndimage
-        
-        if blur_in:
-            sigma = (1 - progress) * 10
-        else:
-            sigma = progress * 10
-        
-        if sigma < 0.1:
-            return img_array
-        
-        blurred = ndimage.gaussian_filter(img_array, sigma=(sigma, sigma, 0))
-        return blurred.astype(np.uint8)
+def is_image_variable(var_name: str) -> bool:
+    return var_name.startswith('image') and var_name[5:].isdigit()
 
 # ============== RENDERER ==============
 
 class PolotnoRenderer:
-    """Main rendering engine."""
-    
     def __init__(self, template_data: dict, product_data: dict):
         self.template = template_data
         self.data = product_data
         self.width = int(template_data.get('width', 1080))
         self.height = int(template_data.get('height', 1080))
-        self.anim_engine = AnimationEngine()
         
-    def extract_variables(self, text: str) -> List[str]:
-        """Extract {{variable}} patterns."""
-        if not text:
-            return []
-        return re.findall(r'\{\{(\w+)\}\}', str(text))
-    
     def substitute_text(self, template: str) -> str:
-        """Replace variables with data."""
         if not template:
             return ""
         
         result = template
-        for var in self.extract_variables(template):
+        for var in extract_variables(template):
             replacement = str(self.data.get(var, ''))
             result = result.replace(f'{{{var}}}', replacement)
         return result
     
-    def render_element_static(self, element: dict) -> Optional[Image.Image]:
-        """Render single element to PIL Image."""
+    def parse_text_style(self, element: dict) -> dict:
+        """Extract all text styling from element."""
+        style = {
+            'fontSize': element.get('fontSize', 30),
+            'fontFamily': element.get('fontFamily', 'Arial'),
+            'fontStyle': element.get('fontStyle', 'normal'),
+            'fontWeight': element.get('fontWeight', 'normal'),
+            'fill': element.get('fill', 'rgba(0,0,0,1)'),
+            'align': element.get('align', 'left'),
+            'verticalAlign': element.get('verticalAlign', 'top'),
+            'lineHeight': element.get('lineHeight', 1.2),
+            'letterSpacing': element.get('letterSpacing', 0),
+            'textDecoration': element.get('textDecoration', ''),
+            'textTransform': element.get('textTransform', 'none'),
+            'stroke': element.get('stroke', 'black'),
+            'strokeWidth': element.get('strokeWidth', 0),
+            'shadowEnabled': element.get('shadowEnabled', False),
+            'shadowColor': element.get('shadowColor', 'black'),
+            'shadowBlur': element.get('shadowBlur', 5),
+            'shadowOffsetX': element.get('shadowOffsetX', 0),
+            'shadowOffsetY': element.get('shadowOffsetY', 0),
+            'opacity': element.get('opacity', 1),
+        }
+        return style
+    
+    def apply_text_transform(self, text: str, transform: str) -> str:
+        """Apply text transformation."""
+        if transform == 'uppercase':
+            return text.upper()
+        elif transform == 'lowercase':
+            return text.lower()
+        elif transform == 'capitalize':
+            return text.title()
+        return text
+    
+    def render_element(self, element: dict, to_numpy: bool = False):
+        """Render single element."""
         elem_type = element.get('type')
         x = int(element.get('x', 0))
         y = int(element.get('y', 0))
         w = int(element.get('width', 100))
         h = int(element.get('height', 100))
         
-        # Create full canvas for this element
-        canvas = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+        # Create full canvas
+        if to_numpy:
+            canvas = np.zeros((self.height, self.width, 4), dtype=np.uint8)
+        else:
+            canvas = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
         
         if elem_type == 'svg':
-            draw = ImageDraw.Draw(canvas)
-            self._render_svg(draw, element, x, y, w, h)
-            
+            self._render_svg(canvas, element, x, y, w, h, to_numpy)
         elif elem_type == 'image':
-            self._render_image(canvas, element, x, y, w, h)
-            
+            self._render_image(canvas, element, x, y, w, h, to_numpy)
         elif elem_type == 'text':
-            draw = ImageDraw.Draw(canvas)
-            self._render_text(draw, element, x, y, w, h)
+            self._render_text(canvas, element, x, y, w, h, to_numpy)
         
         return canvas
     
-    def _render_svg(self, draw: ImageDraw, elem: dict, x: int, y: int, w: int, h: int):
-        """Render SVG shape."""
-        colors_replace = elem.get('colorsReplace', {})
+    def _render_svg(self, canvas, element: dict, x: int, y: int, w: int, h: int, to_numpy: bool):
+        """Render SVG rectangle."""
+        colors_replace = element.get('colorsReplace', {})
         fill = (0, 161, 255, 255)
         
         if colors_replace:
             for old, new in colors_replace.items():
                 fill = hex_to_rgba(new)
         
-        opacity = elem.get('opacity', 1)
+        opacity = element.get('opacity', 1)
         if opacity < 1:
             fill = (*fill[:3], int(fill[3] * opacity))
         
-        draw.rectangle([x, y, x+w, y+h], fill=fill[:3])
+        if to_numpy:
+            # Draw on numpy array
+            from PIL import Image as PILImage
+            tmp = PILImage.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(tmp)
+            draw.rectangle([x, y, x+w, y+h], fill=fill[:3])
+            arr = np.array(tmp)
+            canvas[:] = arr
+        else:
+            draw = ImageDraw.Draw(canvas)
+            draw.rectangle([x, y, x+w, y+h], fill=fill[:3])
     
-    def _render_image(self, canvas: Image.Image, elem: dict, x: int, y: int, w: int, h: int):
+    def _render_image(self, canvas, element: dict, x: int, y: int, w: int, h: int, to_numpy: bool):
         """Render image element."""
-        name = elem.get('name', '')
+        name = element.get('name', '')
         
-        # Check if variable
         if '{{' in name:
             var = name.replace('{{', '').replace('}}', '')
             url = self.data.get(var)
         else:
-            url = elem.get('src', '')
+            url = element.get('src', '')
         
         if not url:
             return
         
         img = load_image_optimized(url, w, h)
-        if img:
-            corner_radius = elem.get('cornerRadius', 0)
-            if corner_radius > 0:
-                mask = Image.new('L', (w, h), 0)
-                mask_draw = ImageDraw.Draw(mask)
-                mask_draw.rounded_rectangle([0, 0, w, h], radius=corner_radius, fill=255)
-                img.putalpha(mask)
-            
-            canvas.paste(img, (x, y), img)
-    
-    def _render_text(self, draw: ImageDraw, elem: dict, x: int, y: int, w: int, h: int):
-        """Render text element."""
-        name = elem.get('name', '')
-        text = elem.get('text', '')
+        if not img:
+            return
         
-        # Determine template
+        corner_radius = element.get('cornerRadius', 0)
+        if corner_radius > 0:
+            mask = Image.new('L', (w, h), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.rounded_rectangle([0, 0, w, h], radius=corner_radius, fill=255)
+            img.putalpha(mask)
+        
+        if to_numpy:
+            # Convert to numpy and place
+            img_array = np.array(img)
+            canvas[y:y+h, x:x+w] = img_array
+        else:
+            if img.mode == 'RGBA':
+                canvas.paste(img, (x, y), img)
+            else:
+                canvas.paste(img, (x, y))
+    
+    def _render_text(self, canvas, element: dict, x: int, y: int, w: int, h: int, to_numpy: bool):
+        """Render text with full style support."""
+        name = element.get('name', '')
+        text = element.get('text', '')
+        
+        # Get template
         template = name if '{{' in name else text if '{{' in text else (name or text)
         final_text = self.substitute_text(template)
         
         if not final_text.strip():
             return
         
-        font_size = elem.get('fontSize', 20)
-        font_family = elem.get('fontFamily', 'Roboto')
-        fill = hex_to_rgba(elem.get('fill', 'rgba(0,0,0,1)'))
-        align = elem.get('align', 'left')
+        # Get styles
+        style = self.parse_text_style(element)
         
-        font = get_font(int(font_size), font_family)
+        # Apply text transform
+        final_text = self.apply_text_transform(final_text, style['textTransform'])
         
-        # Calculate position
-        try:
-            bbox = draw.textbbox((0, 0), final_text, font=font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-        except:
-            tw, th = draw.textsize(final_text, font=font)
+        # Load font
+        font = get_font(int(style['fontSize']), style['fontFamily'])
         
-        if align == 'center':
-            tx = x + (w - tw) / 2
-        elif align == 'right':
-            tx = x + w - tw
+        # Get color
+        fill = hex_to_rgba(style['fill'])
+        opacity = style['opacity']
+        if opacity < 1:
+            fill = (*fill[:3], int(fill[3] * opacity))
+        
+        # Create temp image for text rendering
+        from PIL import Image as PILImage
+        text_layer = PILImage.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(text_layer)
+        
+        # Handle multiline text
+        lines = final_text.split('\n')
+        line_height = int(style['fontSize'] * style['lineHeight'])
+        
+        # Calculate total height
+        total_height = len(lines) * line_height
+        
+        # Vertical alignment
+        if style['verticalAlign'] == 'middle':
+            start_y = y + (h - total_height) / 2
+        elif style['verticalAlign'] == 'bottom':
+            start_y = y + h - total_height
         else:
-            tx = x
+            start_y = y
         
-        ty = y + (h - th) / 2
+        current_y = start_y
         
-        # Shadow
-        if elem.get('shadowEnabled'):
-            sx = elem.get('shadowOffsetX', 0)
-            sy = elem.get('shadowOffsetY', 0)
-            sc = elem.get('shadowColor', 'black')
-            draw.text((tx+sx, ty+sy), final_text, fill=sc, font=font)
+        for line in lines:
+            # Get line width
+            try:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_width = bbox[2] - bbox[0]
+            except:
+                line_width, _ = draw.textsize(line, font=font)
+            
+            # Horizontal alignment
+            if style['align'] == 'center':
+                line_x = x + (w - line_width) / 2
+            elif style['align'] == 'right':
+                line_x = x + w - line_width
+            else:
+                line_x = x
+            
+            # Letter spacing
+            if style['letterSpacing'] != 0:
+                # Draw each character separately
+                char_x = line_x
+                for char in line:
+                    try:
+                        char_bbox = draw.textbbox((0, 0), char, font=font)
+                        char_width = char_bbox[2] - char_bbox[0]
+                    except:
+                        char_width, _ = draw.textsize(char, font=font)
+                    
+                    # Shadow
+                    if style['shadowEnabled']:
+                        sx = style['shadowOffsetX']
+                        sy = style['shadowOffsetY']
+                        sc = style['shadowColor']
+                        draw.text((char_x + sx, current_y + sy), char, fill=sc, font=font)
+                    
+                    # Main text
+                    draw.text((char_x, current_y), char, fill=fill[:3], font=font)
+                    char_x += char_width + style['letterSpacing']
+            else:
+                # Shadow
+                if style['shadowEnabled']:
+                    sx = style['shadowOffsetX']
+                    sy = style['shadowOffsetY']
+                    sc = style['shadowColor']
+                    draw.text((line_x + sx, current_y + sy), line, fill=sc, font=font)
+                
+                # Main text with stroke/outline if specified
+                if style['strokeWidth'] > 0:
+                    # Draw outline
+                    stroke_color = hex_to_rgba(style['stroke'])
+                    for dx in range(-style['strokeWidth'], style['strokeWidth'] + 1):
+                        for dy in range(-style['strokeWidth'], style['strokeWidth'] + 1):
+                            if dx != 0 or dy != 0:
+                                draw.text((line_x + dx, current_y + dy), line, 
+                                         fill=stroke_color[:3], font=font)
+                
+                # Main text
+                draw.text((line_x, current_y), line, fill=fill[:3], font=font)
+            
+            current_y += line_height
         
-        draw.text((tx, ty), final_text, fill=fill[:3], font=font)
+        # Convert to numpy or keep as PIL
+        if to_numpy:
+            arr = np.array(text_layer)
+            # Alpha blend
+            alpha = arr[:, :, 3:4] / 255.0
+            canvas[:] = (arr * alpha + canvas * (1 - alpha)).astype(np.uint8)
+        else:
+            canvas.paste(text_layer, (0, 0), text_layer)
     
     def render_static(self, base_image: Image.Image = None) -> Image.Image:
         """Render static poster."""
-        # Get background
         pages = self.template.get('pages', [])
         if not pages:
             return Image.new('RGB', (self.width, self.height), (255, 255, 255))
@@ -488,9 +561,9 @@ class PolotnoRenderer:
         page = pages[0]
         bg_color = hex_to_rgba(page.get('background', 'rgba(255,255,255,1)'))
         
+        # Start with base image or background color
         if base_image:
             result = base_image.convert('RGBA')
-            # Resize if needed
             if result.size != (self.width, self.height):
                 result = result.resize((self.width, self.height), Image.Resampling.LANCZOS)
         else:
@@ -498,18 +571,18 @@ class PolotnoRenderer:
         
         children = page.get('children', [])
         
-        # Sort: SVGs, images, text
+        # Sort by type
         def sort_key(c):
             return {'svg': 0, 'image': 1, 'text': 2}.get(c.get('type'), 3)
         
         for child in sorted(children, key=sort_key):
-            elem_img = self.render_element_static(child)
+            elem_img = self.render_element(child, to_numpy=False)
             if elem_img:
                 result = Image.alpha_composite(result, elem_img)
         
         return result.convert('RGB')
     
-    def render_video(self, fps: int = 30, progress_callback=None) -> Optional:
+    def render_video(self, fps: int = 30, progress_callback=None):
         """Render animated video."""
         try:
             from moviepy import VideoClip
@@ -530,21 +603,25 @@ class PolotnoRenderer:
         
         for child in page.get('children', []):
             anims = [Animation.from_polotno(a) for a in child.get('animations', []) if a.get('enabled')]
-            elem_img = self.render_element_static(child)
             
-            if anims and elem_img:
-                animated_elements.append((child, anims, elem_img))
-            elif elem_img:
-                static_elements.append(elem_img)
+            if anims:
+                # Pre-render for animation
+                elem_array = self.render_element(child, to_numpy=True)
+                animated_elements.append((child, anims, elem_array))
+            else:
+                # Static element
+                elem_array = self.render_element(child, to_numpy=True)
+                static_elements.append(elem_array)
         
         # Composite static base
+        base_array = np.zeros((self.height, self.width, 4), dtype=np.uint8)
         bg_color = hex_to_rgba(page.get('background', 'rgba(255,255,255,1)'))
-        base = Image.new('RGBA', (self.width, self.height), bg_color)
+        base_array[:, :] = bg_color
         
         for elem in static_elements:
-            base = Image.alpha_composite(base, elem)
-        
-        base_array = np.array(base)
+            # Alpha blend
+            alpha = elem[:, :, 3:4] / 255.0
+            base_array = (elem * alpha + base_array * (1 - alpha)).astype(np.uint8)
         
         # Generate frames
         frames = []
@@ -554,32 +631,38 @@ class PolotnoRenderer:
             frame = base_array.copy()
             
             # Apply animated elements
-            for elem_data, anims, elem_img in animated_elements:
-                elem_array = np.array(elem_img)
+            for elem_data, anims, elem_array in animated_elements:
+                current_array = elem_array.copy()
                 
-                # Find active animation
+                # Check animations
+                visible = True
                 for anim in anims:
                     if anim.type in ['enter', 'exit']:
                         if anim.delay <= time <= anim.delay + anim.duration:
                             progress = (time - anim.delay) / anim.duration
-                            progress = self.anim_engine.ease_value(progress, anim.easing)
-                            elem_array = self._apply_animation(elem_array, anim, progress)
+                            current_array = self._apply_animation(current_array, anim, progress)
+                            visible = True
                             break
                         elif time > anim.delay + anim.duration and anim.type == 'enter':
-                            break  # Keep full
+                            visible = True
+                            break
                         elif time < anim.delay and anim.type == 'exit':
-                            break  # Keep full
+                            visible = True
+                            break
+                        elif time > anim.delay + anim.duration and anim.type == 'exit':
+                            visible = False
                     else:  # loop
                         if time >= anim.delay:
                             loop_time = (time - anim.delay) % anim.duration
                             progress = loop_time / anim.duration
-                            progress = self.anim_engine.ease_value(progress, anim.easing)
-                            elem_array = self._apply_animation(elem_array, anim, progress)
+                            current_array = self._apply_animation(current_array, anim, progress)
+                            visible = True
                             break
                 
-                # Alpha composite
-                alpha = elem_array[:, :, 3:4] / 255.0
-                frame = (elem_array * alpha + frame * (1 - alpha)).astype(np.uint8)
+                if visible:
+                    # Alpha blend onto frame
+                    alpha = current_array[:, :, 3:4] / 255.0
+                    frame = (current_array * alpha + frame * (1 - alpha)).astype(np.uint8)
             
             frames.append(frame[:, :, :3])  # RGB only
             
@@ -589,7 +672,7 @@ class PolotnoRenderer:
         if progress_callback:
             progress_callback(1.0)
         
-        # Create video
+        # Create video clip
         def make_frame(t):
             idx = min(int(t * fps), len(frames) - 1)
             return frames[idx]
@@ -605,37 +688,98 @@ class PolotnoRenderer:
     
     def _apply_animation(self, img_array: np.ndarray, anim: Animation, progress: float) -> np.ndarray:
         """Apply animation effect."""
+        from scipy import ndimage
+        
+        # Ensure we have alpha channel
+        if img_array.shape[2] == 3:
+            alpha = np.full((img_array.shape[0], img_array.shape[1], 1), 255, dtype=np.uint8)
+            img_array = np.concatenate([img_array, alpha], axis=2)
+        
         name = anim.name
         
         if name == 'fade':
             if anim.type == 'exit':
                 progress = 1 - progress
-            return self.anim_engine.apply_fade(img_array, progress)
+            alpha_factor = progress
+            img_array[:, :, 3] = (img_array[:, :, 3] * alpha_factor).astype(np.uint8)
         
         elif name == 'zoom':
-            return self.anim_engine.apply_zoom(img_array, progress, anim.type != 'exit')
+            if anim.type == 'enter':
+                scale = 0.5 + 0.5 * progress
+            elif anim.type == 'exit':
+                scale = 1.5 - 0.5 * progress
+            else:
+                scale = 1.0 + 0.1 * math.sin(progress * 2 * math.pi)
+            
+            h, w = img_array.shape[:2]
+            new_h, new_w = int(h * scale), int(w * scale)
+            
+            if new_h > 1 and new_w > 1:
+                # Scale each channel
+                scaled = np.zeros((new_h, new_w, 4), dtype=np.uint8)
+                for c in range(4):
+                    scaled[:, :, c] = ndimage.zoom(img_array[:, :, c], scale, order=1)
+                
+                # Center crop
+                y1 = max(0, (new_h - h) // 2)
+                x1 = max(0, (new_w - w) // 2)
+                img_array = scaled[y1:y1+h, x1:x1+w]
         
         elif name == 'slide':
-            direction = 'left' if anim.type == 'enter' else 'right'
-            return self.anim_engine.apply_slide(img_array, progress, direction)
+            h, w = img_array.shape[:2]
+            if anim.type == 'enter':
+                offset = int(w * (1 - progress))
+            else:
+                offset = int(-w * (1 - progress))
+            
+            img_array = np.roll(img_array, offset, axis=1)
         
         elif name == 'rotate':
-            return self.anim_engine.apply_rotate(img_array, progress)
+            angle = progress * 360 if anim.type != 'exit' else -progress * 360
+            rotated = np.zeros_like(img_array)
+            for c in range(4):
+                rotated[:, :, c] = ndimage.rotate(img_array[:, :, c], angle, 
+                                                  reshape=False, order=1, mode='constant', cval=0)
+            img_array = rotated
         
         elif name == 'blur':
-            return self.anim_engine.apply_blur(img_array, progress, anim.type != 'exit')
+            if anim.type == 'enter':
+                sigma = (1 - progress) * 5
+            else:
+                sigma = progress * 5
+            
+            if sigma > 0.1:
+                for c in range(3):  # Only blur RGB, not alpha
+                    img_array[:, :, c] = ndimage.gaussian_filter(
+                        img_array[:, :, c], sigma=sigma
+                    ).astype(np.uint8)
         
-        elif name == 'bounce':
-            # Custom bounce using sine
-            bounce = abs(math.sin(progress * math.pi))
-            alpha = bounce
-            return self.anim_engine.apply_fade(img_array, alpha)
-        
-        elif name == 'blink':
-            alpha = 0.5 + 0.5 * math.sin(progress * 2 * math.pi)
-            return self.anim_engine.apply_fade(img_array, alpha)
+        elif name in ['bounce', 'blink']:
+            alpha_factor = 0.5 + 0.5 * math.sin(progress * 2 * math.pi)
+            img_array[:, :, 3] = (img_array[:, :, 3] * alpha_factor).astype(np.uint8)
         
         return img_array
+
+def parse_template_variables(template_data: dict) -> Dict:
+    """Extract all template variables."""
+    variables = {}
+    
+    pages = template_data.get('pages', [])
+    for page in pages:
+        for child in page.get('children', []):
+            name = child.get('name', '')
+            text = child.get('text', '')
+            
+            for field in [name, text]:
+                if field and '{{' in field:
+                    vars_found = extract_variables(field)
+                    for var in vars_found:
+                        variables[var] = {
+                            'is_image': is_image_variable(var),
+                            'type': child.get('type')
+                        }
+    
+    return variables
 
 # ============== STREAMLIT UI ==============
 
@@ -643,7 +787,6 @@ def main():
     st.title("🎬 Polotno Studio Pro")
     st.markdown("**Multi-Store WooCommerce + Animated Video Generator**")
     
-    # Session state
     if 'product_data' not in st.session_state:
         st.session_state.product_data = {}
     if 'search_results' not in st.session_state:
@@ -652,7 +795,6 @@ def main():
     with st.sidebar:
         st.header("🛒 Product Source")
         
-        # Store selection
         store_choice = st.selectbox(
             "Select Store",
             list(WOO_STORES.keys()),
@@ -665,7 +807,6 @@ def main():
             store_url = WOO_STORES[store_choice]
             st.caption(f"URL: {store_url}")
         
-        # Search
         search_query = st.text_input(
             "🔍 Search Product",
             placeholder="e.g., Samsung S25 Ultra, iPhone 16..."
@@ -684,7 +825,6 @@ def main():
                 st.session_state.search_results = []
                 st.session_state.product_data = {}
         
-        # Results
         if st.session_state.search_results:
             st.subheader("Select Product:")
             for i, prod in enumerate(st.session_state.search_results):
@@ -702,14 +842,11 @@ def main():
         st.divider()
         st.header("📁 Template")
         
-        # Base image
         base_image_file = st.file_uploader(
             "Base Image (Optional)",
-            type=['png', 'jpg', 'jpeg'],
-            help="Upload background image or leave empty to use JSON background"
+            type=['png', 'jpg', 'jpeg']
         )
         
-        # JSON input
         json_method = st.radio("JSON Input", ["Upload", "Paste"])
         
         template_data = None
@@ -736,33 +873,31 @@ def main():
         
         generate = st.button("🚀 Generate", type="primary", use_container_width=True)
     
-    # Main area
     col_edit, col_preview = st.columns([1, 1.5])
     
     with col_edit:
         st.subheader("📝 Template Variables")
         
         if template_data:
-            # Detect variables
             renderer = PolotnoRenderer(template_data, {})
             pages = template_data.get('pages', [])
             
-            # Collect all variables
-            all_vars = set()
+            all_vars = {}
             for page in pages:
                 for child in page.get('children', []):
                     for field in [child.get('name', ''), child.get('text', '')]:
-                        all_vars.update(renderer.extract_variables(field))
+                        for var in renderer.extract_variables(field):
+                            all_vars[var] = {
+                                'is_image': is_image_variable(var),
+                                'type': child.get('type')
+                            }
             
-            # Show editable fields
             if all_vars:
                 st.write(f"**{len(all_vars)} variables detected**")
                 
-                # Group by type
                 text_vars = [v for v in all_vars if not v.startswith('image')]
                 image_vars = [v for v in all_vars if v.startswith('image')]
                 
-                # Text variables
                 for var in sorted(text_vars):
                     current = st.session_state.product_data.get(var, '')
                     new_val = st.text_input(
@@ -772,16 +907,13 @@ def main():
                     )
                     st.session_state.product_data[var] = new_val
                 
-                # Image variables
                 for var in sorted(image_vars):
                     st.markdown(f"**{{{var}}}**")
                     current = st.session_state.product_data.get(var, '')
                     
-                    # Show preview
                     if current:
                         st.image(current, width=150)
                     
-                    # Allow URL edit
                     raw_key = f"raw_{var}"
                     raw_url = st.session_state.product_data.get(raw_key, '')
                     
@@ -804,7 +936,6 @@ def main():
         st.subheader("🖼️ Preview")
         
         if generate and template_data:
-            # Load base image
             base_img = None
             if base_image_file:
                 base_img = Image.open(base_image_file)
@@ -816,7 +947,6 @@ def main():
                     result = renderer.render_static(base_img)
                     st.image(result, use_container_width=True)
                     
-                    # Download
                     buf = io.BytesIO()
                     result.save(buf, format='PNG')
                     st.download_button(
@@ -826,7 +956,7 @@ def main():
                         mime="image/png"
                     )
             
-            else:  # Video
+            else:
                 progress = st.progress(0.0)
                 status = st.empty()
                 
