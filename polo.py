@@ -5,7 +5,6 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import re
 from urllib.parse import unquote, quote
-from functools import lru_cache
 import os
 import numpy as np
 import tempfile
@@ -17,27 +16,62 @@ st.set_page_config(page_title="Polotno Studio Pro", layout="wide", page_icon="�
 
 # ============== CONFIGURATION ==============
 
-WOO_STORES = {
-    "Avechi": "https://avechi.co.ke",
-    "Elix Computers": "https://elixcomputers.co.ke", 
-    "Smartphones Kenya": "https://smartphoneskenya.co.ke",
+# Your custom API endpoints
+API_SOURCES = {
+    "Smartphones Kenya": "https://myrhubpy.vercel.app/smartphoneskenya/search/{query}.json",
     "Custom": ""
 }
 
 WSRV_BASE = "https://wsrv.nl/?url={url}&trim=10&output=png&bg=transparent"
 
+# ============== API CLIENT ==============
+
+class ProductAPI:
+    """Fetch products from custom JSON API."""
+    
+    def __init__(self, base_url_template: str, source_name: str = "Custom"):
+        self.url_template = base_url_template
+        self.source_name = source_name
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+    
+    def search(self, query: str) -> List[Dict]:
+        """Search products using the API."""
+        url = self.url_template.format(query=quote(query))
+        
+        try:
+            response = requests.get(url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            products = []
+            for item in data.get('items', []):
+                extra = item.get('extra', {})
+                
+                product = {
+                    'name': extra.get('product_name') or item.get('title', ''),
+                    'price': extra.get('price', ''),
+                    'link': item.get('link', ''),
+                    'title': item.get('title', ''),
+                }
+                
+                # Add all extra fields directly
+                for key, value in extra.items():
+                    product[key] = value
+                
+                products.append(product)
+            
+            return products
+            
+        except Exception as e:
+            st.error(f"API Error: {str(e)[:100]}")
+            return []
+
 # ============== FONT HANDLING ==============
 
 def get_font(size: int, font_family: str = "Arial"):
-    """
-    Load font with fallback chain:
-    1. Requested font from system
-    2. Poppins.ttf from local folder
-    3. DejaVu Sans
-    4. Arial
-    5. Default
-    """
-    # Clean font name
+    """Load font with fallbacks."""
     font_family = font_family.replace('"', '').replace("'", "").strip()
     
     # Try exact font first
@@ -47,13 +81,7 @@ def get_font(size: int, font_family: str = "Arial"):
         pass
     
     # Try local Poppins
-    local_fonts = [
-        "Poppins.ttf",
-        "Poppins-Regular.ttf",
-        "poppins.ttf",
-        "./Poppins.ttf",
-        "./poppins.ttf"
-    ]
+    local_fonts = ["Poppins.ttf", "Poppins-Regular.ttf", "./Poppins.ttf", "./poppins.ttf"]
     for font_file in local_fonts:
         if os.path.exists(font_file):
             try:
@@ -61,45 +89,41 @@ def get_font(size: int, font_family: str = "Arial"):
             except:
                 pass
     
-    # Try system fonts with mapped names
+    # Map common font names to system fonts
     font_map = {
-        'poppins': ['Poppins-Regular.ttf', 'Poppins.ttf'],
-        'roboto': ['Roboto-Regular.ttf', 'DejaVuSans.ttf'],
-        'arial': ['Arial.ttf', 'DejaVuSans.ttf'],
-        'dejavu': ['DejaVuSans.ttf'],
-        'six caps': ['DejaVuSansCondensed-Bold.ttf'],
-        'alata': ['DejaVuSans-Bold.ttf'],
-        'bebas neue': ['DejaVuSansCondensed-Bold.ttf'],
-        'montserrat': ['DejaVuSans.ttf'],
-        'inter': ['DejaVuSans.ttf'],
-        'open sans': ['DejaVuSans.ttf'],
+        'poppins': 'DejaVuSans.ttf',
+        'roboto': 'DejaVuSans.ttf',
+        'arial': 'DejaVuSans.ttf',
+        'dejavu': 'DejaVuSans.ttf',
+        'six caps': 'DejaVuSansCondensed-Bold.ttf',
+        'alata': 'DejaVuSans-Bold.ttf',
+        'bebas neue': 'DejaVuSansCondensed-Bold.ttf',
+        'montserrat': 'DejaVuSans.ttf',
+        'inter': 'DejaVuSans.ttf',
+        'open sans': 'DejaVuSans.ttf',
     }
     
-    # Check mapped names
     font_lower = font_family.lower()
     if font_lower in font_map:
-        for fallback in font_map[font_lower]:
-            try:
-                paths = [
-                    f"/usr/share/fonts/truetype/dejavu/{fallback}",
-                    f"/usr/share/fonts/truetype/{fallback}",
-                    f"/System/Library/Fonts/{fallback}",
-                    f"/Windows/Fonts/{fallback}",
-                    fallback
-                ]
-                for path in paths:
-                    if os.path.exists(path):
-                        return ImageFont.truetype(path, int(size))
-            except:
-                continue
+        fallback = font_map[font_lower]
+        paths = [
+            f"/usr/share/fonts/truetype/dejavu/{fallback}",
+            f"/usr/share/fonts/truetype/{fallback}",
+            f"/System/Library/Fonts/{fallback}",
+            f"/Windows/Fonts/{fallback}",
+        ]
+        for path in paths:
+            if os.path.exists(path):
+                try:
+                    return ImageFont.truetype(path, int(size))
+                except:
+                    continue
     
-    # Try common system paths
+    # System defaults
     system_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
         "/Windows/Fonts/arial.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
     ]
     
     for path in system_paths:
@@ -109,137 +133,18 @@ def get_font(size: int, font_family: str = "Arial"):
             except:
                 continue
     
-    # Fallback to default
     return ImageFont.load_default()
-
-# ============== DATA CLASSES ==============
-
-@dataclass
-class Animation:
-    type: str
-    name: str
-    delay: float
-    duration: float
-    easing: str = "linear"
-    
-    @classmethod
-    def from_polotno(cls, anim: dict):
-        return cls(
-            type=anim.get('type', 'enter'),
-            name=anim.get('name', 'fade'),
-            delay=anim.get('delay', 0) / 1000,
-            duration=anim.get('duration', 500) / 1000,
-            easing=anim.get('easing', 'linear')
-        )
-
-@dataclass  
-class Product:
-    name: str
-    price: str
-    currency: str
-    raw_price: float
-    sku: str
-    link: str
-    images: List[str]
-    attributes: Dict[str, str]
-    store: str
-    
-    def to_template_data(self) -> Dict:
-        data = {
-            'name': self.name,
-            'price': self.price,
-            'sku': self.sku,
-            'link': self.link,
-            'currency': self.currency,
-        }
-        
-        spec_map = {
-            'RAM': 'ram',
-            'ROM': 'rom', 
-            'STORAGE': 'storage',
-            'COLOR': 'color',
-            'DISPLAY': 'display',
-            'BATTERY': 'battery',
-            'CAMERA': 'camera',
-            'PROCESSOR': 'processor'
-        }
-        
-        spec_idx = 1
-        for attr_key, var_name in spec_map.items():
-            if attr_key in self.attributes:
-                data[var_name] = self.attributes[attr_key]
-                data[f'spec{spec_idx}'] = self.attributes[attr_key]
-                spec_idx += 1
-        
-        for i, img_url in enumerate(self.images[:6], 1):
-            data[f'image{i}'] = WSRV_BASE.format(url=quote(img_url, safe=''))
-            data[f'raw_image{i}'] = img_url
-        
-        return data
-
-# ============== WOOCOMMERCE API ==============
-
-class WooCommerceAPI:
-    def __init__(self, base_url: str, store_name: str = "Custom"):
-        self.base_url = base_url.rstrip('/')
-        self.api_path = f"{self.base_url}/wp-json/wc/store/v1/products"
-        self.store_name = store_name
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-    
-    def search(self, keyword: str, limit: int = 3) -> List[Product]:
-        params = {'search': keyword, 'per_page': limit}
-        
-        try:
-            response = requests.get(
-                self.api_path, 
-                params=params, 
-                headers=self.headers, 
-                timeout=15
-            )
-            response.raise_for_status()
-            results = response.json()
-            
-            products = []
-            for item in results:
-                raw_price = item['prices']['price']
-                currency = item['prices']['currency_code']
-                
-                attrs = {}
-                for attr in item.get('attributes', []):
-                    name = attr.get('name', '').upper()
-                    values = ", ".join([t['name'] for t in attr.get('terms', [])])
-                    attrs[name] = values
-                
-                product = Product(
-                    name=item.get('name', ''),
-                    price=f"{currency} {int(raw_price)/100:,.0f}",
-                    currency=currency,
-                    raw_price=int(raw_price)/100,
-                    sku=item.get('sku', ''),
-                    link=item.get('permalink', ''),
-                    images=[img['src'] for img in item.get('images', [])],
-                    attributes=attrs,
-                    store=self.store_name
-                )
-                products.append(product)
-            
-            return products
-            
-        except Exception as e:
-            st.error(f"API Error ({self.store_name}): {str(e)[:100]}")
-            return []
 
 # ============== IMAGE PROCESSING ==============
 
-def load_image_optimized(url: str, width: int = None, height: int = None) -> Optional[Image.Image]:
+def load_image_optimized(url: str, width: int = None, height: int = None):
+    """Load image from URL."""
     if not url:
         return None
     
     try:
-        if not url.startswith('https://wsrv.nl'):
-            url = WSRV_BASE.format(url=quote(url, safe=''))
+        # Clean up URL
+        url = url.strip()
         
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, timeout=20, headers=headers)
@@ -256,10 +161,11 @@ def load_image_optimized(url: str, width: int = None, height: int = None) -> Opt
         return img
         
     except Exception as e:
-        st.warning(f"Failed to load image: {str(e)[:50]}")
+        st.warning(f"Image load failed: {str(e)[:50]}")
         return None
 
-def hex_to_rgba(color_str: str) -> Tuple[int, int, int, int]:
+def hex_to_rgba(color_str: str):
+    """Convert color string to RGBA tuple."""
     if not color_str:
         return (0, 0, 0, 255)
     
@@ -290,15 +196,35 @@ def hex_to_rgba(color_str: str) -> Tuple[int, int, int, int]:
     
     return (0, 0, 0, 255)
 
-def extract_variables(text: str) -> List[str]:
+def extract_variables(text: str):
+    """Extract {{variable}} patterns."""
     if not text:
         return []
     return re.findall(r'\{\{(\w+)\}\}', str(text))
 
-def is_image_variable(var_name: str) -> bool:
+def is_image_variable(var_name: str):
+    """Check if variable is an image variable."""
     return var_name.startswith('image') and var_name[5:].isdigit()
 
 # ============== RENDERER ==============
+
+@dataclass
+class Animation:
+    type: str
+    name: str
+    delay: float
+    duration: float
+    easing: str = "linear"
+    
+    @classmethod
+    def from_polotno(cls, anim: dict):
+        return cls(
+            type=anim.get('type', 'enter'),
+            name=anim.get('name', 'fade'),
+            delay=anim.get('delay', 0) / 1000,
+            duration=anim.get('duration', 500) / 1000,
+            easing=anim.get('easing', 'linear')
+        )
 
 class PolotnoRenderer:
     def __init__(self, template_data: dict, product_data: dict):
@@ -308,6 +234,7 @@ class PolotnoRenderer:
         self.height = int(template_data.get('height', 1080))
         
     def substitute_text(self, template: str) -> str:
+        """Replace {{variables}} with actual data."""
         if not template:
             return ""
         
@@ -319,7 +246,7 @@ class PolotnoRenderer:
     
     def parse_text_style(self, element: dict) -> dict:
         """Extract all text styling from element."""
-        style = {
+        return {
             'fontSize': element.get('fontSize', 30),
             'fontFamily': element.get('fontFamily', 'Arial'),
             'fontStyle': element.get('fontStyle', 'normal'),
@@ -340,7 +267,6 @@ class PolotnoRenderer:
             'shadowOffsetY': element.get('shadowOffsetY', 0),
             'opacity': element.get('opacity', 1),
         }
-        return style
     
     def apply_text_transform(self, text: str, transform: str) -> str:
         """Apply text transformation."""
@@ -353,14 +279,13 @@ class PolotnoRenderer:
         return text
     
     def render_element(self, element: dict, to_numpy: bool = False):
-        """Render single element."""
+        """Render single element to canvas."""
         elem_type = element.get('type')
         x = int(element.get('x', 0))
         y = int(element.get('y', 0))
         w = int(element.get('width', 100))
         h = int(element.get('height', 100))
         
-        # Create full canvas
         if to_numpy:
             canvas = np.zeros((self.height, self.width, 4), dtype=np.uint8)
         else:
@@ -376,7 +301,7 @@ class PolotnoRenderer:
         return canvas
     
     def _render_svg(self, canvas, element: dict, x: int, y: int, w: int, h: int, to_numpy: bool):
-        """Render SVG rectangle."""
+        """Render SVG shape."""
         colors_replace = element.get('colorsReplace', {})
         fill = (0, 161, 255, 255)
         
@@ -389,13 +314,10 @@ class PolotnoRenderer:
             fill = (*fill[:3], int(fill[3] * opacity))
         
         if to_numpy:
-            # Draw on numpy array
-            from PIL import Image as PILImage
-            tmp = PILImage.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+            tmp = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
             draw = ImageDraw.Draw(tmp)
             draw.rectangle([x, y, x+w, y+h], fill=fill[:3])
-            arr = np.array(tmp)
-            canvas[:] = arr
+            canvas[:] = np.array(tmp)
         else:
             draw = ImageDraw.Draw(canvas)
             draw.rectangle([x, y, x+w, y+h], fill=fill[:3])
@@ -404,6 +326,7 @@ class PolotnoRenderer:
         """Render image element."""
         name = element.get('name', '')
         
+        # Check if template variable
         if '{{' in name:
             var = name.replace('{{', '').replace('}}', '')
             url = self.data.get(var)
@@ -417,6 +340,7 @@ class PolotnoRenderer:
         if not img:
             return
         
+        # Apply corner radius
         corner_radius = element.get('cornerRadius', 0)
         if corner_radius > 0:
             mask = Image.new('L', (w, h), 0)
@@ -425,7 +349,6 @@ class PolotnoRenderer:
             img.putalpha(mask)
         
         if to_numpy:
-            # Convert to numpy and place
             img_array = np.array(img)
             canvas[y:y+h, x:x+w] = img_array
         else:
@@ -435,7 +358,7 @@ class PolotnoRenderer:
                 canvas.paste(img, (x, y))
     
     def _render_text(self, canvas, element: dict, x: int, y: int, w: int, h: int, to_numpy: bool):
-        """Render text with full style support."""
+        """Render text with full styling."""
         name = element.get('name', '')
         text = element.get('text', '')
         
@@ -448,29 +371,22 @@ class PolotnoRenderer:
         
         # Get styles
         style = self.parse_text_style(element)
-        
-        # Apply text transform
         final_text = self.apply_text_transform(final_text, style['textTransform'])
         
         # Load font
         font = get_font(int(style['fontSize']), style['fontFamily'])
-        
-        # Get color
         fill = hex_to_rgba(style['fill'])
         opacity = style['opacity']
         if opacity < 1:
             fill = (*fill[:3], int(fill[3] * opacity))
         
-        # Create temp image for text rendering
-        from PIL import Image as PILImage
-        text_layer = PILImage.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+        # Create text layer
+        text_layer = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(text_layer)
         
-        # Handle multiline text
+        # Handle multiline
         lines = final_text.split('\n')
         line_height = int(style['fontSize'] * style['lineHeight'])
-        
-        # Calculate total height
         total_height = len(lines) * line_height
         
         # Vertical alignment
@@ -484,7 +400,7 @@ class PolotnoRenderer:
         current_y = start_y
         
         for line in lines:
-            # Get line width
+            # Measure line
             try:
                 bbox = draw.textbbox((0, 0), line, font=font)
                 line_width = bbox[2] - bbox[0]
@@ -499,54 +415,29 @@ class PolotnoRenderer:
             else:
                 line_x = x
             
-            # Letter spacing
-            if style['letterSpacing'] != 0:
-                # Draw each character separately
-                char_x = line_x
-                for char in line:
-                    try:
-                        char_bbox = draw.textbbox((0, 0), char, font=font)
-                        char_width = char_bbox[2] - char_bbox[0]
-                    except:
-                        char_width, _ = draw.textsize(char, font=font)
-                    
-                    # Shadow
-                    if style['shadowEnabled']:
-                        sx = style['shadowOffsetX']
-                        sy = style['shadowOffsetY']
-                        sc = style['shadowColor']
-                        draw.text((char_x + sx, current_y + sy), char, fill=sc, font=font)
-                    
-                    # Main text
-                    draw.text((char_x, current_y), char, fill=fill[:3], font=font)
-                    char_x += char_width + style['letterSpacing']
-            else:
-                # Shadow
-                if style['shadowEnabled']:
-                    sx = style['shadowOffsetX']
-                    sy = style['shadowOffsetY']
-                    sc = style['shadowColor']
-                    draw.text((line_x + sx, current_y + sy), line, fill=sc, font=font)
-                
-                # Main text with stroke/outline if specified
-                if style['strokeWidth'] > 0:
-                    # Draw outline
-                    stroke_color = hex_to_rgba(style['stroke'])
-                    for dx in range(-style['strokeWidth'], style['strokeWidth'] + 1):
-                        for dy in range(-style['strokeWidth'], style['strokeWidth'] + 1):
-                            if dx != 0 or dy != 0:
-                                draw.text((line_x + dx, current_y + dy), line, 
-                                         fill=stroke_color[:3], font=font)
-                
-                # Main text
-                draw.text((line_x, current_y), line, fill=fill[:3], font=font)
+            # Shadow
+            if style['shadowEnabled']:
+                sx = style['shadowOffsetX']
+                sy = style['shadowOffsetY']
+                sc = style['shadowColor']
+                draw.text((line_x + sx, current_y + sy), line, fill=sc, font=font)
             
+            # Stroke/outline
+            if style['strokeWidth'] > 0:
+                stroke_color = hex_to_rgba(style['stroke'])
+                for dx in range(-style['strokeWidth'], style['strokeWidth'] + 1):
+                    for dy in range(-style['strokeWidth'], style['strokeWidth'] + 1):
+                        if dx != 0 or dy != 0:
+                            draw.text((line_x + dx, current_y + dy), line, 
+                                     fill=stroke_color[:3], font=font)
+            
+            # Main text
+            draw.text((line_x, current_y), line, fill=fill[:3], font=font)
             current_y += line_height
         
-        # Convert to numpy or keep as PIL
+        # Composite
         if to_numpy:
             arr = np.array(text_layer)
-            # Alpha blend
             alpha = arr[:, :, 3:4] / 255.0
             canvas[:] = (arr * alpha + canvas * (1 - alpha)).astype(np.uint8)
         else:
@@ -561,7 +452,7 @@ class PolotnoRenderer:
         page = pages[0]
         bg_color = hex_to_rgba(page.get('background', 'rgba(255,255,255,1)'))
         
-        # Start with base image or background color
+        # Start with base image or background
         if base_image:
             result = base_image.convert('RGBA')
             if result.size != (self.width, self.height):
@@ -571,7 +462,7 @@ class PolotnoRenderer:
         
         children = page.get('children', [])
         
-        # Sort by type
+        # Sort: SVGs, images, text
         def sort_key(c):
             return {'svg': 0, 'image': 1, 'text': 2}.get(c.get('type'), 3)
         
@@ -597,7 +488,7 @@ class PolotnoRenderer:
         duration = page.get('duration', 5000) / 1000
         total_frames = int(duration * fps)
         
-        # Pre-render all elements
+        # Separate static and animated
         static_elements = []
         animated_elements = []
         
@@ -605,21 +496,18 @@ class PolotnoRenderer:
             anims = [Animation.from_polotno(a) for a in child.get('animations', []) if a.get('enabled')]
             
             if anims:
-                # Pre-render for animation
                 elem_array = self.render_element(child, to_numpy=True)
                 animated_elements.append((child, anims, elem_array))
             else:
-                # Static element
                 elem_array = self.render_element(child, to_numpy=True)
                 static_elements.append(elem_array)
         
-        # Composite static base
+        # Build static base
         base_array = np.zeros((self.height, self.width, 4), dtype=np.uint8)
         bg_color = hex_to_rgba(page.get('background', 'rgba(255,255,255,1)'))
         base_array[:, :] = bg_color
         
         for elem in static_elements:
-            # Alpha blend
             alpha = elem[:, :, 3:4] / 255.0
             base_array = (elem * alpha + base_array * (1 - alpha)).astype(np.uint8)
         
@@ -630,12 +518,11 @@ class PolotnoRenderer:
             time = frame_idx / fps
             frame = base_array.copy()
             
-            # Apply animated elements
+            # Add animated elements
             for elem_data, anims, elem_array in animated_elements:
                 current_array = elem_array.copy()
-                
-                # Check animations
                 visible = True
+                
                 for anim in anims:
                     if anim.type in ['enter', 'exit']:
                         if anim.delay <= time <= anim.delay + anim.duration:
@@ -660,11 +547,10 @@ class PolotnoRenderer:
                             break
                 
                 if visible:
-                    # Alpha blend onto frame
                     alpha = current_array[:, :, 3:4] / 255.0
                     frame = (current_array * alpha + frame * (1 - alpha)).astype(np.uint8)
             
-            frames.append(frame[:, :, :3])  # RGB only
+            frames.append(frame[:, :, :3])
             
             if progress_callback and frame_idx % 5 == 0:
                 progress_callback(frame_idx / total_frames)
@@ -690,7 +576,7 @@ class PolotnoRenderer:
         """Apply animation effect."""
         from scipy import ndimage
         
-        # Ensure we have alpha channel
+        # Ensure RGBA
         if img_array.shape[2] == 3:
             alpha = np.full((img_array.shape[0], img_array.shape[1], 1), 255, dtype=np.uint8)
             img_array = np.concatenate([img_array, alpha], axis=2)
@@ -700,8 +586,7 @@ class PolotnoRenderer:
         if name == 'fade':
             if anim.type == 'exit':
                 progress = 1 - progress
-            alpha_factor = progress
-            img_array[:, :, 3] = (img_array[:, :, 3] * alpha_factor).astype(np.uint8)
+            img_array[:, :, 3] = (img_array[:, :, 3] * progress).astype(np.uint8)
         
         elif name == 'zoom':
             if anim.type == 'enter':
@@ -715,12 +600,10 @@ class PolotnoRenderer:
             new_h, new_w = int(h * scale), int(w * scale)
             
             if new_h > 1 and new_w > 1:
-                # Scale each channel
                 scaled = np.zeros((new_h, new_w, 4), dtype=np.uint8)
                 for c in range(4):
                     scaled[:, :, c] = ndimage.zoom(img_array[:, :, c], scale, order=1)
                 
-                # Center crop
                 y1 = max(0, (new_h - h) // 2)
                 x1 = max(0, (new_w - w) // 2)
                 img_array = scaled[y1:y1+h, x1:x1+w]
@@ -731,7 +614,6 @@ class PolotnoRenderer:
                 offset = int(w * (1 - progress))
             else:
                 offset = int(-w * (1 - progress))
-            
             img_array = np.roll(img_array, offset, axis=1)
         
         elif name == 'rotate':
@@ -749,14 +631,14 @@ class PolotnoRenderer:
                 sigma = progress * 5
             
             if sigma > 0.1:
-                for c in range(3):  # Only blur RGB, not alpha
+                for c in range(3):
                     img_array[:, :, c] = ndimage.gaussian_filter(
                         img_array[:, :, c], sigma=sigma
                     ).astype(np.uint8)
         
         elif name in ['bounce', 'blink']:
-            alpha_factor = 0.5 + 0.5 * math.sin(progress * 2 * math.pi)
-            img_array[:, :, 3] = (img_array[:, :, 3] * alpha_factor).astype(np.uint8)
+            alpha = 0.5 + 0.5 * math.sin(progress * 2 * math.pi)
+            img_array[:, :, 3] = (img_array[:, :, 3] * alpha).astype(np.uint8)
         
         return img_array
 
@@ -785,7 +667,7 @@ def parse_template_variables(template_data: dict) -> Dict:
 
 def main():
     st.title("🎬 Polotno Studio Pro")
-    st.markdown("**Multi-Store WooCommerce + Animated Video Generator**")
+    st.markdown("**Product API + Animated Video Generator**")
     
     if 'product_data' not in st.session_state:
         st.session_state.product_data = {}
@@ -795,29 +677,33 @@ def main():
     with st.sidebar:
         st.header("🛒 Product Source")
         
-        store_choice = st.selectbox(
-            "Select Store",
-            list(WOO_STORES.keys()),
-            index=2
+        source_choice = st.selectbox(
+            "Select Source",
+            list(API_SOURCES.keys()),
+            index=0
         )
         
-        if store_choice == "Custom":
-            store_url = st.text_input("Store URL", value="https://")
+        if source_choice == "Custom":
+            api_url = st.text_input(
+                "API URL Template", 
+                value="https://myrhubpy.vercel.app/yourstore/search/{query}.json",
+                help="Use {query} as placeholder for search term"
+            )
         else:
-            store_url = WOO_STORES[store_choice]
-            st.caption(f"URL: {store_url}")
+            api_url = API_SOURCES[source_choice]
+            st.caption(f"API: {api_url}")
         
         search_query = st.text_input(
             "🔍 Search Product",
-            placeholder="e.g., Samsung S25 Ultra, iPhone 16..."
+            placeholder="e.g., s23, iphone, samsung..."
         )
         
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Search", use_container_width=True):
-                with st.spinner(f"Searching {store_choice}..."):
-                    api = WooCommerceAPI(store_url, store_choice)
-                    results = api.search(search_query, limit=5)
+                with st.spinner(f"Searching..."):
+                    api = ProductAPI(api_url, source_choice)
+                    results = api.search(search_query)
                     st.session_state.search_results = results
         
         with col2:
@@ -825,18 +711,21 @@ def main():
                 st.session_state.search_results = []
                 st.session_state.product_data = {}
         
+        # Display results
         if st.session_state.search_results:
             st.subheader("Select Product:")
             for i, prod in enumerate(st.session_state.search_results):
                 with st.container(border=True):
-                    st.write(f"**{prod.name}**")
-                    st.write(f"💰 {prod.price}")
-                    if prod.images:
-                        st.image(prod.images[0], width=100)
+                    st.write(f"**{prod.get('name', prod.get('title', 'Unknown'))}**")
+                    st.write(f"💰 {prod.get('price', 'N/A')}")
+                    
+                    # Show first image
+                    img_key = next((k for k in prod.keys() if k.startswith('image')), None)
+                    if img_key and prod[img_key]:
+                        st.image(prod[img_key], width=150)
                     
                     if st.button(f"Select #{i+1}", key=f"select_{i}", use_container_width=True):
-                        st.session_state.product_data = prod.to_template_data()
-                        st.session_state.selected_product = prod
+                        st.session_state.product_data = prod
                         st.rerun()
         
         st.divider()
@@ -886,7 +775,8 @@ def main():
             for page in pages:
                 for child in page.get('children', []):
                     for field in [child.get('name', ''), child.get('text', '')]:
-                        for var in renderer.extract_variables(field):
+                        extracted = extract_variables(field)
+                        for var in extracted:
                             all_vars[var] = {
                                 'is_image': is_image_variable(var),
                                 'type': child.get('type')
@@ -898,6 +788,7 @@ def main():
                 text_vars = [v for v in all_vars if not v.startswith('image')]
                 image_vars = [v for v in all_vars if v.startswith('image')]
                 
+                # Text variables
                 for var in sorted(text_vars):
                     current = st.session_state.product_data.get(var, '')
                     new_val = st.text_input(
@@ -907,6 +798,7 @@ def main():
                     )
                     st.session_state.product_data[var] = new_val
                 
+                # Image variables
                 for var in sorted(image_vars):
                     st.markdown(f"**{{{var}}}**")
                     current = st.session_state.product_data.get(var, '')
@@ -914,19 +806,15 @@ def main():
                     if current:
                         st.image(current, width=150)
                     
-                    raw_key = f"raw_{var}"
-                    raw_url = st.session_state.product_data.get(raw_key, '')
-                    
                     new_url = st.text_input(
                         "Image URL",
-                        value=raw_url,
+                        value=str(current),
                         key=f"url_{var}",
                         label_visibility="collapsed"
                     )
                     
                     if new_url:
-                        st.session_state.product_data[raw_key] = new_url
-                        st.session_state.product_data[var] = WSRV_BASE.format(url=quote(new_url, safe=''))
+                        st.session_state.product_data[var] = new_url
             else:
                 st.info("No template variables found")
         else:
@@ -956,7 +844,7 @@ def main():
                         mime="image/png"
                     )
             
-            else:
+            else:  # Video
                 progress = st.progress(0.0)
                 status = st.empty()
                 
