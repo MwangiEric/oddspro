@@ -6,6 +6,7 @@ import numpy as np
 from moviepy import VideoClip
 import re
 import random
+import html
 
 # ==========================================
 # 1. GLOBAL CONFIGURATION
@@ -70,10 +71,104 @@ def load_asset(url, size=None):
         img = Image.open(BytesIO(res.content)).convert("RGBA")
         if size: img = img.resize(size, Image.Resampling.LANCZOS)
         return img
-    except: return Image.new("RGBA", (1,1), (0,0,0,0))
+    except: 
+        return Image.new("RGBA", (1,1), (0,0,0,0))
 
-def fetch_device_data(query):
-    # Professional fallback data if the search fails entirely
+def parse_specs_from_short_desc(short_desc):
+    """Extract key specs from WooCommerce short_description HTML/text"""
+    specs = []
+    text = html.unescape(short_desc)  # Decode HTML entities like &#8243;
+    
+    # Processor
+    proc_match = re.search(r'Processor:\s*([^\n]+)', text, re.IGNORECASE)
+    if proc_match:
+        proc = proc_match.group(1).strip()
+        # Clean up - take just the chipset name
+        proc = re.sub(r'\s*\([^)]*\)\s*–.*$', '', proc)  # Remove (3nm) – 2026 Edition
+        specs.append(("processor", proc))
+    else:
+        specs.append(("processor", "High Performance"))
+    
+    # Display/Screen
+    disp_match = re.search(r'Display:\s*([^\n]+)', text, re.IGNORECASE)
+    if disp_match:
+        disp = disp_match.group(1).strip()
+        # Extract just size and type, e.g. "6.2″ Dynamic AMOLED 2X" or "6.8-inch Dynamic"
+        size_match = re.search(r'([\d\.]+[″"]?\s*[\-\w\s]+?(?:AMOLED|OLED|LCD|IPS))', disp, re.IGNORECASE)
+        screen = size_match.group(1).strip() if size_match else disp.split(',')[0].strip()
+        specs.append(("screen", screen))
+    else:
+        specs.append(("screen", "OLED Display"))
+    
+    # Memory
+    mem_match = re.search(r'(?:Memory|RAM)[:\s]+([^\n]+)', text, re.IGNORECASE)
+    if mem_match:
+        mem = mem_match.group(1).strip()
+        # Extract first config, e.g. "12GB RAM, 256GB ROM" -> "12GB / 256GB"
+        mem_clean = mem.split(',')[0].strip()
+        mem_clean = re.sub(r'\s+RAM\s*/\s*', ' / ', mem_clean, flags=re.IGNORECASE)
+        mem_clean = re.sub(r'\s+ROM$', '', mem_clean, flags=re.IGNORECASE)
+        specs.append(("memory", mem_clean))
+    else:
+        specs.append(("memory", "High Speed"))
+    
+    # Battery
+    batt_match = re.search(r'Battery:\s*([^\n]+)', text, re.IGNORECASE)
+    if batt_match:
+        batt = batt_match.group(1).strip()
+        # Extract mAh number
+        mah_match = re.search(r'(\d{3,4})\s*mAh', batt, re.IGNORECASE)
+        battery = f"{mah_match.group(1)} mAh" if mah_match else batt.split(',')[0].strip()
+        specs.append(("battery", battery))
+    else:
+        specs.append(("battery", "Long Life"))
+    
+    return specs
+
+def fetch_woocommerce_data(query):
+    """Primary source: Fetch from Tripple K WooCommerce store"""
+    try:
+        url = f"https://myrhubpy.vercel.app/woocommerce/search/tripplek.co.ke.json?q={requests.utils.quote(query)}"
+        res = requests.get(url, timeout=15).json()
+        
+        if res.get("error") or not res.get("items"):
+            return None
+            
+        items = res["items"]
+        if not items:
+            return None
+            
+        # Use first matching product
+        product = items[0]
+        extra = product.get("extra", {})
+        
+        # Extract price - prefer sale_price, fallback to price
+        price_raw = extra.get("sale_price") or extra.get("price", "0")
+        # Remove currency prefix and commas
+        price_num = re.sub(r'[^\d]', '', str(price_raw))
+        
+        # Image logic: use image1 (wsrv.nl processed), fallback to original
+        img_url = extra.get("image1") or extra.get("image1_original") or CONFIG["placeholder_phone"]
+        
+        # Parse specs from short_description
+        short_desc = extra.get("short_description", "")
+        specs = parse_specs_from_short_desc(short_desc)
+        
+        return {
+            "source": "woocommerce",
+            "name": extra.get("product_name") or product.get("title", query),
+            "img_url": img_url,
+            "price": price_num,
+            "specs": specs,
+            "raw_data": product  # Keep raw for debugging
+        }
+        
+    except Exception as e:
+        st.warning(f"WooCommerce fetch failed: {e}")
+        return None
+
+def fetch_gsmarena_data(query):
+    """Fallback source: Fetch from GSM Arena API"""
     dummy = {
         "name": query.upper(), 
         "img_url": CONFIG["placeholder_phone"], 
@@ -83,15 +178,15 @@ def fetch_device_data(query):
     try:
         # 1. SEARCH: Get the base_id and official name
         search_res = requests.get(f"https://tkphsp2.vercel.app/gsm/search?q={query}", timeout=10).json()
-        if not search_res: return dummy
+        if not search_res: 
+            return {**dummy, "price": "0", "source": "gsm_fallback"}
         
-        base_id = search_res[0]['id'] # e.g., "xiaomi_poco_x3_pro-10802.php"
+        base_id = search_res[0]['id']
         official_name = search_res[0]['name']
 
-        # 2. IMAGE ID TRANSFORMATION (Needed for the images endpoint)
+        # 2. IMAGE ID TRANSFORMATION
         if "-" in base_id:
             parts = base_id.rsplit('-', 1)
-            # Remove .php if present in the first part and rebuild
             clean_part_0 = parts[0].replace(".php", "")
             image_id = f"{clean_part_0}-pictures-{parts[1]}"
         else:
@@ -100,24 +195,22 @@ def fetch_device_data(query):
         # 3. FETCH INFO & IMAGES
         info = requests.get(f"https://tkphsp2.vercel.app/gsm/info/{base_id}", timeout=10).json()
         imgs_data = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{image_id}", timeout=10).json()
-        #imgs_data = requests.get(f"https://tkphsp2.vercel.app/gsm/images/{base_id}", timeout=10).json()
 
-        # 4. IMAGE LOGIC: Safe extraction (Prevents IndexError)
+        # 4. IMAGE LOGIC
         img_list = imgs_data.get('images', [])
         if len(img_list) > 1:
-            api_img = img_list[1]  # Priority: Lifestyle Shot
+            api_img = img_list[1]
         elif len(img_list) == 1:
-            api_img = img_list[0]  # Fallback: Single image
+            api_img = img_list[0]
         else:
-            api_img = search_res[0].get('image', CONFIG["placeholder_phone"]) # Last resort: Search thumbnail
+            api_img = search_res[0].get('image', CONFIG["placeholder_phone"])
 
-        # 5. CLEAN SPECS (Safe against structure changes)
+        # 5. CLEAN SPECS
         chip = info.get("platform", {}).get("chipset", "High Performance").split('(')[0].strip()
         
         display_raw = info.get("display", {}).get("size", "6.7 inches")
         screen = display_raw.split(',')[0].strip()
 
-        # Memory Handling (Handles both List and Dictionary formats)
         mem_data = info.get("memory", {})
         if isinstance(mem_data, list) and len(mem_data) > 0:
             mem_raw = mem_data[0].get("internal", "128GB 8GB RAM")
@@ -125,17 +218,17 @@ def fetch_device_data(query):
             mem_raw = mem_data.get("internal", "128GB 8GB RAM")
         else:
             mem_raw = "128GB 8GB RAM"
-        
         memory = mem_raw.split(',')[0].strip()
 
-        # Battery Handling
         batt_raw = info.get("battery", {}).get("battType", "5000 mAh")
         batt_match = re.search(r'(\d+)\s*mAh', str(batt_raw))
         battery = f"{batt_match.group(1)} mAh" if batt_match else "5000 mAh"
 
         return {
+            "source": "gsmarena",
             "name": official_name, 
             "img_url": api_img,
+            "price": "0",  # No price from GSM Arena
             "specs": [
                 ("processor", chip), 
                 ("screen", screen), 
@@ -145,8 +238,18 @@ def fetch_device_data(query):
         }
         
     except Exception as e:
-        # If anything breaks, return the query name with placeholders to keep the app running
-        return {**dummy, "name": query.upper()}
+        return {**dummy, "price": "0", "source": "gsm_fallback"}
+
+def fetch_device_data(query):
+    """Unified fetch: WooCommerce first, GSM Arena fallback"""
+    # Try primary source
+    wc_data = fetch_woocommerce_data(query)
+    if wc_data:
+        return wc_data
+    
+    # Fallback to GSM Arena
+    st.info("Not found in store inventory. Falling back to GSM Arena...")
+    return fetch_gsmarena_data(query)
 
 # ==========================================
 # 3. MOTION GRAPHICS ENGINE
@@ -211,15 +314,29 @@ def add_animation_overlay(canvas, mode, data, price, t=None):
     draw = ImageDraw.Draw(overlay)
     cfg = CONFIG["layouts"][mode]
     
+    # Use price from data if available (WooCommerce), else use user input
+    display_price = data.get("price", price)
+    if display_price == "0" or not display_price:
+        display_price = price
+    
+    # Format price with commas
+    try:
+        price_int = int(display_price)
+        display_price = f"{price_int:,}"
+    except:
+        display_price = str(display_price)
+
     # Typing Title
     name = data["name"].upper()
-    if t is not None: name = name[:int(len(name) * min(t/1.5, 1.0))]
+    if t is not None: 
+        name = name[:int(len(name) * min(t/1.5, 1.0))]
     draw.text(cfg["title_pos"], name, fill="white", font_size=CONFIG["fonts"]["title"], anchor="mm")
 
     # Staggered Specs
     sx, sy = cfg["spec_start"]
     for i, (icon_name, val) in enumerate(data["specs"]):
-        if t is not None and t < (1.5 + i * 0.2): continue
+        if t is not None and t < (1.5 + i * 0.2): 
+            continue
         y = sy + (i * 95)
         icon = load_asset(CONFIG["icons"][icon_name], size=CONFIG["sizes"]["spec_icon"])
         overlay.paste(icon, (sx, y), icon)
@@ -229,7 +346,7 @@ def add_animation_overlay(canvas, mode, data, price, t=None):
     if t is None or t > 3.5:
         badge_box = [sx, sy + 480, sx + 320, sy + 560]
         draw.rounded_rectangle(badge_box, radius=CONFIG["sizes"]["badge_radius"], fill=CONFIG["colors"]["mint"])
-        draw.text((sx + 160, sy + 520), f"KES {price}", fill="white", font_size=CONFIG["fonts"]["price"], anchor="mm")
+        draw.text((sx + 160, sy + 520), f"KES {display_price}", fill="white", font_size=CONFIG["fonts"]["price"], anchor="mm")
     return overlay
 
 # ==========================================
@@ -254,13 +371,22 @@ def main():
     st.set_page_config(page_title="Triple K Pro", layout="centered")
     st.title("🎬 Triple K: Ad Engine")
     
+    # Show source indicator
+    st.caption("Primary: Tripple K Store API | Fallback: GSM Arena")
+    
     c1, c2, c3 = st.columns([2, 1, 1])
-    query = c1.text_input("Device Name", "iPhone 15 Pro")
-    price = c2.text_input("Price", "145,000")
+    query = c1.text_input("Device Name", "Samsung Galaxy S26")
+    price = c2.text_input("Price (Override)", "145,000")
     mode = c3.selectbox("Format", ["whatsapp", "tiktok"])
     
     if st.button("Generate Assets", use_container_width=True):
-        data = fetch_device_data(query)
+        with st.spinner("Fetching product data..."):
+            data = fetch_device_data(query)
+            
+        # Show which source was used
+        source_badge = "🛒 Store" if data.get("source") == "woocommerce" else "📱 GSM Arena"
+        st.success(f"Source: {source_badge}")
+        
         # Display static preview
         cfg = CONFIG["layouts"][mode]
         bg = create_gradient_bg(cfg["canvas"][0], cfg["canvas"][1])
@@ -271,4 +397,5 @@ def main():
         with st.spinner("Rendering Animation..."):
             st.video(generate_video(mode, data, price))
 
-if __name__ == "__main__": main()
+if __name__ == "__main__": 
+    main()
