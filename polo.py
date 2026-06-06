@@ -6,8 +6,8 @@ import time
 import pandas as pd
 import streamlit as st
 
-# Configure the Streamlit page layout
-st.set_page_config(page_title="Stream Vault", page_icon="🔒", layout=wide)
+# Configure the Streamlit page layout - Fixed: "wide" is now correctly wrapped in quotes
+st.set_page_config(page_title="Stream Vault", page_icon="🔒", layout="wide")
 
 # 🔒 HIDDEN SOURCE URL - Users cannot see this in the browser UI
 HIDDEN_IPTV_URL = "https://iptv-org.github.io/iptv/categories/sports.m3u"
@@ -99,7 +99,6 @@ if st.button("Generate & Verify Playlist Connectors", type="primary"):
         df = pd.DataFrame(all_results)
         clean_m3u_data = generate_clean_m3u(df)
         
-        # Big download button. They click this, get the file, but NEVER see the raw URL string.
         st.download_button(
             label="📥 Download Cleaned M3U Playlist",
             data=clean_m3u_data,
