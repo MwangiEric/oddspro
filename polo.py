@@ -1,12 +1,11 @@
 import asyncio
 import aiohttp
 import m3u8
-import urllib.request
 import time
 import pandas as pd
 import streamlit as st
 
-# Configure the Streamlit page layout - Fixed: "wide" is now correctly wrapped in quotes
+# Configure the Streamlit page layout
 st.set_page_config(page_title="Stream Vault", page_icon="🔒", layout="wide")
 
 # 🔒 HIDDEN SOURCE URL - Users cannot see this in the browser UI
@@ -32,25 +31,37 @@ async def test_single_link(session, semaphore, channel_name, url, progress_queue
         return result
 
 async def run_tester_engine(progress_bar, status_text):
-    try:
-        req = urllib.request.Request(
-            HIDDEN_IPTV_URL, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
-        playlist_data = urllib.request.urlopen(req).read().decode('utf-8')
-        playlist = m3u8.loads(playlist_data)
-    except Exception as e:
-        st.error(f"Error fetching data repository safely.")
-        return None
-
-    tracks = playlist.tracks
-    total_tracks = len(tracks)
-    semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
-    progress_queue = asyncio.Queue()
-    
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    # Modern browser headers to bypass server firewalls/scrapers blocks
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    }
 
     async with aiohttp.ClientSession(headers=headers) as session:
+        # Step 1: Securely download the playlist file text using aiohttp instead of urllib
+        try:
+            async with session.get(HIDDEN_IPTV_URL, timeout=10) as response:
+                if response.status != 200:
+                    st.error(f"Remote server returned HTTP Status Error: {response.status}")
+                    return None
+                playlist_data = await response.text(encoding='utf-8', errors='ignore')
+                playlist = m3u8.loads(playlist_data)
+        except Exception as e:
+            st.error(f"Network Download Failure: {str(e)}")
+            st.info("Tip: The server hosting your M3U file might be blocking Cloud connections. Double check your target URL.")
+            return None
+
+        tracks = playlist.tracks
+        total_tracks = len(tracks)
+        
+        if total_tracks == 0:
+            st.warning("Playlist data retrieved successfully, but zero playable tracks were parsed.")
+            return None
+
+        semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
+        progress_queue = asyncio.Queue()
+        
+        # Step 2: Concurrently audit all links in the playlist
         tasks = [test_single_link(session, semaphore, t.title if t.title else t.uri, t.uri, progress_queue) for t in tracks]
         worker_pool = asyncio.gather(*tasks)
         
